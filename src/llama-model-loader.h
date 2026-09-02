@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstring>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -72,6 +73,14 @@ struct llama_model_loader {
     int n_kv      = 0;
     int n_tensors = 0;
     int n_created = 0;
+
+    // Names for which n_created has already been incremented. A TENSOR_DUPLICATED
+    // call can be the one that actually materializes a weights_map entry for the
+    // first time, when a caller passes the flag purely to get buft reclassification
+    // before it's known which of two logical creation sites will run first (e.g.
+    // qwen35.cpp's tied-embedding placement). n_created must still count exactly
+    // once per unique name regardless of which call turns out to be first.
+    std::set<std::string> n_created_names;
 
     uint64_t n_elements = 0;
     size_t   n_bytes    = 0;

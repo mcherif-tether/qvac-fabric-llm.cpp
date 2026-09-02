@@ -1283,10 +1283,18 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
     ggml_set_name(tensor, ggml_get_name(cur));
 
-    if (duplicated) {
+    // A TENSOR_DUPLICATED call reaching here (the context-scoped lookup above found
+    // nothing) is not necessarily a genuine second allocation: a caller may pass the
+    // flag on what turns out to be the first materialization of this name, purely to
+    // get this call's buft reclassified before it's known which of two logical
+    // creation sites will resolve first. n_created must count each unique name once
+    // regardless; only count size_data's extra top-up for an actual second physical
+    // allocation of an already-counted name.
+    if (duplicated && n_created_names.count(tn.str())) {
         size_data += ggml_nbytes(cur);
     } else {
         n_created++;
+        n_created_names.insert(tn.str());
     }
 
     return tensor;

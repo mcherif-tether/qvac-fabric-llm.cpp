@@ -40,11 +40,18 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
     const bool mtp_only = (hparams.n_layer_nextn > 0) && (ml.get_weight("blk.0.attn_norm.weight") == nullptr);
     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
 
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
-
     // output
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
+
+    // Tied embeddings (no separate output.weight): place token_embd where the output
+    // tensor will land (dev_output's placement, e.g. compute device under full offload)
+    // instead of dev_input's CPU-only placement, by passing the same reclassifying flag
+    // the duplicate-output path below uses. The loader's existing name-based dedup
+    // (llama-model-loader.cpp create_tensor, ggml_get_tensor(ctx, name) before alloc)
+    // then finds this tensor already present in that buft's context and reuses it for
+    // the "output" call below instead of allocating a second copy.
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, output == NULL ? TENSOR_DUPLICATED : 0);
 
     // if output is NULL, init from the input tok embed
     if (output == NULL) {
