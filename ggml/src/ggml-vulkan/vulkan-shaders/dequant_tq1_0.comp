@@ -45,7 +45,11 @@ void main() {
             qbyte = uint(data_a[ib].qh[m]);
         }
 
-        const uint q = qbyte * pow3[t];
+        // Upstream's CPU reference relies on `uint8_t q = x->qs[j] * pow3[n];` truncating
+        // to 8 bits. GLSL uint does not truncate, so the mask is required: without it any
+        // t >= 1 overflows and produces values outside {-1, 0, 1}. dequant_funcs.glsl's
+        // dequantize1() and mul_mat_vec_tq1_0.comp both mask; this path did not.
+        const uint q = (qbyte * pow3[t]) & 255u;
         const uint xi = (q * 3u) >> 8;
         data_b[i + j] = D_TYPE(d * (float(xi) - 1.0f));
     }
