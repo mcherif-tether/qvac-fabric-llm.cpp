@@ -1259,6 +1259,7 @@ void process_shaders() {
     string_to_spv("out_prod_q8_0", "out_prod_q8_0.comp", merge_maps(base_dict, {{"DATA_A_Q8_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("out_prod_tq2_0", "out_prod_tq2_0.comp", merge_maps(base_dict, {{"DATA_A_TQ2_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("out_prod_tq2_0_128", "out_prod_tq2_0.comp", merge_maps(base_dict, {{"DATA_A_TQ2_0_128", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
+    string_to_spv("out_prod_tq1_0", "out_prod_tq1_0.comp", merge_maps(base_dict, {{"DATA_A_TQ1_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
 
     string_to_spv("out_prod_tiled_f32", "out_prod_tiled.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("out_prod_tiled_f16_f32", "out_prod_tiled.comp", merge_maps(base_dict, {{"A_TYPE", "float16_t"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
@@ -1266,6 +1267,7 @@ void process_shaders() {
     string_to_spv("out_prod_tiled_q8_0", "out_prod_tiled_q8_0.comp", merge_maps(base_dict, {{"DATA_A_Q8_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("out_prod_tiled_tq2_0", "out_prod_tiled_tq2_0.comp", merge_maps(base_dict, {{"DATA_A_TQ2_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
     string_to_spv("out_prod_tiled_tq2_0_128", "out_prod_tiled_tq2_0.comp", merge_maps(base_dict, {{"DATA_A_TQ2_0_128", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
+    string_to_spv("out_prod_tiled_tq1_0", "out_prod_tiled_tq1_0.comp", merge_maps(base_dict, {{"DATA_A_TQ1_0", "1"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}}));
 
     string_to_spv("argsort_f32", "argsort.comp", {{"A_TYPE", "float"}});
     string_to_spv("argsort_large_f32", "argsort_large.comp", {{"A_TYPE", "float"}});
