@@ -1140,11 +1140,13 @@ struct vk_device_struct {
     vk_pipeline pipeline_out_prod_q4_0;
     vk_pipeline pipeline_out_prod_q8_0;
     vk_pipeline pipeline_out_prod_tq2_0;
+    vk_pipeline pipeline_out_prod_tq1_0;
     vk_pipeline pipeline_out_prod_tiled_f32;
     vk_pipeline pipeline_out_prod_tiled_f16_f32;
     vk_pipeline pipeline_out_prod_tiled_q4_0;
     vk_pipeline pipeline_out_prod_tiled_q8_0;
     vk_pipeline pipeline_out_prod_tiled_tq2_0;
+    vk_pipeline pipeline_out_prod_tiled_tq1_0;
     vk_pipeline pipeline_mul_mat_id_back_a_f32;
     vk_pipeline pipeline_mul_mat_id_back_b_f32;
     vk_pipeline pipeline_mul_mat_id_back_b_q8_0;
@@ -6821,6 +6823,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_q4_0, "out_prod_q4_0", out_prod_q4_0_len, out_prod_q4_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_q8_0, "out_prod_q8_0", out_prod_q8_0_len, out_prod_q8_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_tq2_0, "out_prod_tq2_0", out_prod_tq2_0_len, out_prod_tq2_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_out_prod_tq1_0, "out_prod_tq1_0", out_prod_tq1_0_len, out_prod_tq1_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_f16_f32, "out_prod_f16_f32", out_prod_f16_f32_len, out_prod_f16_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_tiled_f32, "out_prod_tiled_f32", out_prod_tiled_f32_len, out_prod_tiled_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1);
@@ -6828,6 +6831,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_tiled_q4_0, "out_prod_tiled_q4_0", out_prod_tiled_q4_0_len, out_prod_tiled_q4_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_tiled_q8_0, "out_prod_tiled_q8_0", out_prod_tiled_q8_0_len, out_prod_tiled_q8_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1, true);
     ggml_vk_create_pipeline(device, device->pipeline_out_prod_tiled_tq2_0, "out_prod_tiled_tq2_0", out_prod_tiled_tq2_0_len, out_prod_tiled_tq2_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_out_prod_tiled_tq1_0, "out_prod_tiled_tq1_0", out_prod_tiled_tq1_0_len, out_prod_tiled_tq1_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1, true);
 
     ggml_vk_create_pipeline(device, device->pipeline_mul_mat_id_back_a_f32, "mul_mat_id_back_a_f32", mul_mat_id_back_a_f32_len, mul_mat_id_back_a_f32_data, "main", 4, sizeof(vk_op_mul_mat_id_back_a_push_constants), {1, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_mul_mat_id_back_b_f32, "mul_mat_id_back_b_f32", mul_mat_id_back_b_f32_len, mul_mat_id_back_b_f32_data, "main", 4, sizeof(vk_op_mul_mat_id_back_b_push_constants), {1, 1, 1}, {}, 1);
@@ -13487,12 +13491,14 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             if (src0->type == GGML_TYPE_Q4_0) return ctx->device->pipeline_out_prod_tiled_q4_0;
             if (src0->type == GGML_TYPE_Q8_0) return ctx->device->pipeline_out_prod_tiled_q8_0;
             if (src0->type == GGML_TYPE_TQ2_0) return ctx->device->pipeline_out_prod_tiled_tq2_0;
+            if (src0->type == GGML_TYPE_TQ1_0) return ctx->device->pipeline_out_prod_tiled_tq1_0;
         }
         if (dst->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
             if (src0->type == GGML_TYPE_F32) return ctx->device->pipeline_out_prod_f32;
             if (src0->type == GGML_TYPE_Q4_0) return ctx->device->pipeline_out_prod_q4_0;
             if (src0->type == GGML_TYPE_Q8_0) return ctx->device->pipeline_out_prod_q8_0;
             if (src0->type == GGML_TYPE_TQ2_0) return ctx->device->pipeline_out_prod_tq2_0;
+            if (src0->type == GGML_TYPE_TQ1_0) return ctx->device->pipeline_out_prod_tq1_0;
         }
         if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
             return ctx->device->pipeline_out_prod_f16_f32;
@@ -14284,7 +14290,8 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
                 pipeline == ctx->device->pipeline_out_prod_tiled_f16_f32 ||
                 pipeline == ctx->device->pipeline_out_prod_tiled_q4_0 ||
                 pipeline == ctx->device->pipeline_out_prod_tiled_q8_0 ||
-                pipeline == ctx->device->pipeline_out_prod_tiled_tq2_0) {
+                pipeline == ctx->device->pipeline_out_prod_tiled_tq2_0 ||
+                pipeline == ctx->device->pipeline_out_prod_tiled_tq1_0) {
                 // 32x32 tiles
                 elements[0] = (uint32_t)CEIL_DIV(dst->ne[0], 32);
                 elements[1] = (uint32_t)CEIL_DIV(dst->ne[1], 32);
@@ -21388,6 +21395,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 case GGML_TYPE_Q4_0:
                 case GGML_TYPE_Q8_0:
                 case GGML_TYPE_TQ2_0:
+                case GGML_TYPE_TQ1_0:
                     return true;
                 default:
                     return false;
