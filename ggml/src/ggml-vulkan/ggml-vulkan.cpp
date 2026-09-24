@@ -628,7 +628,11 @@ struct vk_device_struct {
     uint64_t suballocation_block_size;
     uint64_t min_imported_host_pointer_alignment;
     bool external_memory_host {};
-    uint64_t tiling_threshold;
+    // Tiling keeps every SSBO of a MUL_MAT under this many bytes (see GGML_VK_TILING at device init).
+    // UINT64_MAX means never tile. Must never be left at 0: calculate_tile_dims asserts that the
+    // smallest tile fits under it, so 0 aborts the first tiled dispatch.
+    uint64_t tiling_threshold = UINT64_MAX;
+    bool tiling_force = false;   // GGML_VK_TILING=static:N on a non-Adreno device, for testing the tiled path
     bool fp16;
     bool bf16;
     bool pipeline_robustness;
@@ -5853,11 +5857,51 @@ static vk_device ggml_vk_get_device(size_t idx) {
 
         device->subgroup_size = subgroup_props.subgroupSize;
         device->subgroup_size_log2 = uint32_t(log2f(float(device->subgroup_size)));
-        if (descriptor_buffer_support && getenv("GGML_VK_TILING_DISABLE") == nullptr &&
-            device->architecture == vk_device_architecture::QUALCOMM_ADRENO) {
-            // despite being able to allocate large buffers, using them for SSBOs cause problems
-            // on Adreno GPUs, so we need to tile larger operations.
-            device->tiling_threshold = descriptor_buffer_props.descriptorBufferAddressSpaceSize;
+        // Tiling of large MUL_MAT dispatches. Despite being able to allocate large buffers, using
+        // them for SSBOs causes problems on Adreno GPUs, so larger operations are split into tiles.
+        //   GGML_VK_TILING=dynamic   (default) threshold = the driver's descriptor buffer address
+        //                            space; Adreno only. Falls back to static:128 when the
+        //                            extension is missing, since the SSBO limit is still there.
+        //   GGML_VK_TILING=off        never tile
+        //   GGML_VK_TILING=static[:N] tile against a fixed limit of N MiB (default 128) regardless
+        //                            of the driver value; on a non-Adreno device this forces the
+        //                            tiled path so it can be tested on desktop hardware
+        {
+            const bool is_adreno = device->architecture == vk_device_architecture::QUALCOMM_ADRENO;
+            const char * tiling_env = getenv("GGML_VK_TILING");
+            std::string tiling_mode = tiling_env ? tiling_env : "dynamic";
+            const uint64_t reported = descriptor_buffer_support
+                                    ? (uint64_t) descriptor_buffer_props.descriptorBufferAddressSpaceSize : 0;
+            device->tiling_threshold = UINT64_MAX;
+            device->tiling_force = false;
+            if (tiling_mode == "off") {
+                // nothing: threshold stays at UINT64_MAX
+            } else if (tiling_mode.rfind("static", 0) == 0) {
+                uint64_t mib = 128;
+                const size_t colon = tiling_mode.find(':');
+                if (colon != std::string::npos) {
+                    mib = std::max<uint64_t>(1, strtoull(tiling_mode.c_str() + colon + 1, nullptr, 10));
+                }
+                device->tiling_threshold = mib * 1024ull * 1024ull;
+                device->tiling_force = !is_adreno;
+            } else {
+                if (tiling_mode != "dynamic") {
+                    GGML_LOG_WARN("ggml_vulkan: GGML_VK_TILING=%s not understood, using dynamic\n", tiling_mode.c_str());
+                    tiling_mode = "dynamic";
+                }
+                if (is_adreno) {
+                    device->tiling_threshold = reported > 0 ? reported : 128ull * 1024ull * 1024ull;
+                }
+            }
+            // Both driver figures are logged so a run records which limit tiling was working against:
+            // maxStorageBufferRange is what the driver claims, descriptorBufferAddressSpaceSize is the
+            // proxy the tiling actually uses. On Adreno 830 the claim is ~4 GiB while ~128 MiB is what works.
+            GGML_LOG_INFO("ggml_vulkan: tiling mode %s, threshold %llu bytes, descriptor address space %llu bytes, maxStorageBufferRange %llu bytes%s\n",
+                          tiling_mode.c_str(),
+                          (unsigned long long) device->tiling_threshold,
+                          (unsigned long long) reported,
+                          (unsigned long long) device->properties.limits.maxStorageBufferRange,
+                          is_adreno ? "" : " (not Adreno: tiling only in static mode)");
         }
         device->uma = device->properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
         if (sm_builtins) {
@@ -8947,7 +8991,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
     const uint64_t d_buf_offset = vk_tensor_offset(dst) + dst->view_offs;
 
-    bool do_tiling = ctx->device->architecture == vk_device_architecture::QUALCOMM_ADRENO &&
+    bool do_tiling = (ctx->device->architecture == vk_device_architecture::QUALCOMM_ADRENO || ctx->device->tiling_force) &&
         (ne02 == 1 && ne03 == 1 && ne12 == 1 && ne13 == 1) &&
         (x_sz + y_sz + d_sz >= ctx->device->tiling_threshold);
 
