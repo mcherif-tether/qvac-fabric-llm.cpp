@@ -9002,6 +9002,18 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         VK_LOG_DEBUG("[ggml_vk_mul_mat_q_f16] [tiling] tile_m="
             << tile_m << ", tile_n=" << tile_n << ", m_tiles=" << m_tiles << ", n_tiles=" << n_tiles
             << ", num_dispatches=" << num_dispatches);
+        // GGML_VK_TILING_LOG=1: print the first tiled matmuls at INFO level, so a release build's log
+        // can show that tiling actually engaged and on what shapes. Bounded so a long run stays quiet.
+        if (getenv("GGML_VK_TILING_LOG") != nullptr) {
+            static int tiling_log_count = 0;
+            if (tiling_log_count < 16) {
+                GGML_LOG_INFO("ggml_vulkan: tiled MUL_MAT m=%lld n=%lld k=%lld x=%llu y=%llu d=%llu bytes -> tile %llu x %llu, %llu dispatches\n",
+                              (long long) ne01, (long long) ne11, (long long) ne00,
+                              (unsigned long long) x_sz, (unsigned long long) y_sz, (unsigned long long) d_sz,
+                              (unsigned long long) tile_m, (unsigned long long) tile_n, (unsigned long long) num_dispatches);
+                tiling_log_count++;
+            }
+        }
     }
 
     {
