@@ -8995,6 +8995,20 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         (ne02 == 1 && ne03 == 1 && ne12 == 1 && ne13 == 1) &&
         (x_sz + y_sz + d_sz >= ctx->device->tiling_threshold);
 
+    if (getenv("GGML_VK_TILING_LOG") != nullptr) {
+        static int candidate_log_count = 0;
+        const uint64_t total = x_sz + y_sz + d_sz;
+        // 64 MiB floor: well under the 128 MiB threshold, catches the fine-tune
+        // head matmul while skipping small per-layer LoRA matmuls.
+        if (total >= 64ull * 1024ull * 1024ull && candidate_log_count < 16) {
+            GGML_LOG_INFO("ggml_vulkan: MUL_MAT candidate m=%lld n=%lld k=%lld x=%llu y=%llu d=%llu bytes total=%llu threshold=%llu do_tiling=%d\n",
+                          (long long) ne01, (long long) ne11, (long long) ne00,
+                          (unsigned long long) x_sz, (unsigned long long) y_sz, (unsigned long long) d_sz,
+                          (unsigned long long) total, (unsigned long long) ctx->device->tiling_threshold, (int) do_tiling);
+            candidate_log_count++;
+        }
+    }
+
     uint64_t tile_m = 0, tile_n = 0, m_tiles = 0, n_tiles = 0, num_dispatches = 1;
     if (do_tiling) {
         GGML_ASSERT(ne02 == 1 && ne03 == 1 && ne12 == 1 && ne13 == 1);
