@@ -8174,6 +8174,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 512, 512, 1024, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 1024, 1024, 1024, {1, 1}, {1, 1}));
 
+    // TQ2_0_128 single-token matvec at model shapes (n = 1): Qwen3-0.6B and Qwen3-1.7B projections,
+    // then sweeps of k at m = 1024 and of m at k = 1024 and k = 3072. The cases above cover n = 1 only at m = 16.
+    for (auto mk : std::vector<std::array<int64_t, 2>>{
+            {2048, 1024}, {1024, 1024}, {1024, 2048}, {3072, 1024}, {1024, 3072}, {151936, 1024},
+            {2048, 2048}, {6144, 2048}, {2048, 6144}, {151936, 2048},
+            {1024, 512}, {1024, 768}, {1024, 1536}, {1024, 2560}, {1024, 4096}, {1024, 6144},
+            {32, 1024}, {64, 1024}, {128, 1024}, {256, 1024}, {512, 1024}, {4096, 1024},
+            {16, 3072}, {64, 3072}, {256, 3072}, {3072, 3072}}) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, mk[0], 1, mk[1], {1, 1}, {1, 1}));
+    }
+
     for (ggml_type type_a : all_types) {
         for (int i = 1; i < 10; ++i) {
             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 256, { 1,  1}, {1, 1}));
