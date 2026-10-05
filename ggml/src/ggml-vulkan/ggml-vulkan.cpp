@@ -9248,12 +9248,11 @@ static bool ggml_vk_should_use_mmvq(const vk_device& device, uint32_t m, uint32_
         return false;
     }
 
-    // Adreno: TQ/TQ2 integer-dot MMVQ is numerically wrong (test-backend-ops
-    // FAIL for small-n matvec; large float matmul OK). Prefer float matvec.
+    // Adreno: TQ1_0 stays on the float matvec (integer dot gives it no measured gain).
+    // TQ2_0 and TQ2_0_128 use the integer-dot matvec: verified on Adreno 750 and 830,
+    // decode logits match the float path on BitNet and Qwen3 0.6B to 14B.
     if (device->architecture == vk_device_architecture::QUALCOMM_ADRENO &&
-        (src0_type == GGML_TYPE_TQ1_0 ||
-         src0_type == GGML_TYPE_TQ2_0 ||
-         src0_type == GGML_TYPE_TQ2_0_128)) {
+        src0_type == GGML_TYPE_TQ1_0) {
         return false;
     }
 
