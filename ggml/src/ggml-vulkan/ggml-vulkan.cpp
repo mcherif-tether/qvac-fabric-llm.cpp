@@ -7104,6 +7104,21 @@ static vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type 
     return ctx->device->pipeline_dequant[type];
 }
 
+// Integer-dot (q8_1) kernels that give wrong results on a device. The q8_1 pipeline getters return
+// nullptr for these, so every caller (matvec, matmul and their _id variants) falls back to the float path.
+// Adreno: MXFP4 fails test-backend-ops MUL_MAT with integer dot on and passes with it off (Adreno 830).
+static bool ggml_vk_q8_1_disabled(const vk_device& device, ggml_type src0_type) {
+    if (device->architecture == vk_device_architecture::QUALCOMM_ADRENO) {
+        switch (src0_type) {
+            case GGML_TYPE_MXFP4:
+                return true;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
 static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_context * ctx, ggml_type src0_type, ggml_type src1_type, ggml_prec prec) {
     VK_LOG_DEBUG("ggml_vk_get_mul_mat_mat_pipeline(" << ggml_type_name(src0_type) << ", " << ggml_type_name(src1_type) << ", " << prec << ")");
     if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F32) {
@@ -7137,6 +7152,9 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_conte
 
     // MMQ
     if (src1_type == GGML_TYPE_Q8_1) {
+        if (ggml_vk_q8_1_disabled(ctx->device, src0_type)) {
+            return nullptr;
+        }
         vk_matmul_pipeline pipelines = ctx->device->pipeline_dequant_mul_mat_mat_q8_1[src0_type].f32acc;
 
         if (pipelines->is_empty()) {
@@ -7229,6 +7247,9 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * 
     GGML_ASSERT(num_cols >= 1 && num_cols <= mul_mat_vec_max_cols);
 
     if (b_type == GGML_TYPE_Q8_1) {
+        if (ggml_vk_q8_1_disabled(ctx->device, a_type)) {
+            return nullptr;
+        }
         switch (a_type) {
             case GGML_TYPE_TQ2_0:
             case GGML_TYPE_TQ2_0_128:
@@ -7347,6 +7368,9 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_id_pipeline(ggml_backend_vk_co
 
     // MMQ
     if (src1_type == GGML_TYPE_Q8_1) {
+        if (ggml_vk_q8_1_disabled(ctx->device, src0_type)) {
+            return nullptr;
+        }
         vk_matmul_pipeline pipelines = ctx->device->pipeline_dequant_mul_mat_mat_id_q8_1[src0_type].f32acc;
 
         if (pipelines->is_empty()) {
@@ -7418,6 +7442,9 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
     GGML_ASSERT(b_type == GGML_TYPE_F32 || b_type == GGML_TYPE_Q8_1);
 
     if (b_type == GGML_TYPE_Q8_1) {
+        if (ggml_vk_q8_1_disabled(ctx->device, a_type)) {
+            return nullptr;
+        }
         switch (a_type) {
             case GGML_TYPE_TQ2_0:
             case GGML_TYPE_Q4_0:
