@@ -1,0 +1,103 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_integer_dot_product : require
+
+#define MMQ
+#define B_TYPE block_q8_1_x4
+
+#include "mul_mat_vec_base.glsl"
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+
+int tq1_trit(uint ib, uint e) {
+    const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
+    uint qbyte;
+    uint t;
+    if (e < 80u) {
+        t = e / 16u;
+        qbyte = uint(data_a[ib].qs[e % 16u]);
+    } else if (e < 120u) {
+        const uint ee = e - 80u;
+        t = ee / 8u;
+        qbyte = uint(data_a[ib].qs[16u + (ee % 8u)]);
+    } else {
+        const uint ee = e - 120u;
+        t = ee / 2u;
+        qbyte = uint(data_a[ib].qh[ee % 2u]);
+    }
+    const uint q = (qbyte * pow3[t]) & 255u;
+    return int((q * 3u) >> 8u) - 1;
+}
+
+int dotPacked4x8_custom(int a, int b) {
+    int8_t a0 = int8_t(a & 0xFF);
+    int8_t a1 = int8_t((a >> 8) & 0xFF);
+    int8_t a2 = int8_t((a >> 16) & 0xFF);
+    int8_t a3 = int8_t((a >> 24) & 0xFF);
+    int8_t b0 = int8_t(b & 0xFF);
+    int8_t b1 = int8_t((b >> 8) & 0xFF);
+    int8_t b2 = int8_t((b >> 16) & 0xFF);
+    int8_t b3 = int8_t((b >> 24) & 0xFF);
+    return int(a0) * int(b0) + int(a1) * int(b1) + int(a2) * int(b2) + int(a3) * int(b3);
+}
+
+void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+    uint a_offset, b_offset, d_offset;
+    get_offsets(a_offset, b_offset, d_offset);
+
+    const uint num_blocks_per_row = p.ncols / QUANT_K;
+    const uint tid = gl_LocalInvocationID.x;
+
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        [[unroll]] for (uint i = 0; i < NUM_ROWS; ++i) {
+            temp[j][i] = FLOAT_TYPE(0);
+        }
+    }
+
+    for (uint jcol = 0; jcol < NUM_COLS; jcol++) {
+        const uint b_base = (jcol * p.batch_stride_b);
+        for (uint n = 0; n < num_rows; ++n) {
+            const uint ib0 = a_offset / QUANT_K + (first_row + n) * num_blocks_per_row;
+            FLOAT_TYPE acc = 0.0f;
+            for (uint i = tid/8; i < num_blocks_per_row; i += gl_WorkGroupSize.x/8) {
+                const float d = float(data_a[ib0 + i].d);
+                // 8 threads cover 128 elements as 4-wide groups stepped by 32.
+                for (uint base = (tid % 8u) * 4u; base < QUANT_K; base += 32u) {
+                    const int t0 = tq1_trit(ib0 + i, base + 0u);
+                    const int t1 = tq1_trit(ib0 + i, base + 1u);
+                    const int t2 = tq1_trit(ib0 + i, base + 2u);
+                    const int t3 = tq1_trit(ib0 + i, base + 3u);
+                    const int a_packed = (t0 & 0xFF) | ((t1 & 0xFF) << 8) | ((t2 & 0xFF) << 16) | ((t3 & 0xFF) << 24);
+
+                    const uint elem = i * QUANT_K + base;
+                    const uint b_block_idx = b_offset + (b_base + elem) / QUANT_K_Q8_1;
+                    const uint b_outer = b_block_idx / 4u;
+                    const uint b_inner = b_block_idx % 4u;
+                    const vec2 ds = vec2(data_b[b_offset + b_outer].ds[b_inner]);
+                    const uint vec_idx = (base % 32u) / 4u;
+                    const int b_packed = data_b[b_offset + b_outer].qs[b_inner * 8u + vec_idx];
+                    const int q_sum = dotPacked4x8_custom(a_packed, b_packed);
+                    acc += FLOAT_TYPE(d * (float(q_sum) * ds.x));
+                }
+            }
+            temp[jcol][n] = acc;
+        }
+    }
+
+    reduce_result(temp, d_offset, first_row, num_rows, tid);
+}
+
+void main() {
+    const uint first_row = NUM_ROWS * (gl_WorkGroupID.x + gl_NumWorkGroups.x * gl_WorkGroupID.z);
+
+    if (first_row + NUM_ROWS <= p.stride_d) {
+        compute_outputs(first_row, NUM_ROWS);
+    } else {
+        if (first_row >= p.stride_d) {
+            return;
+        }
+        compute_outputs(first_row, p.stride_d - first_row);
+    }
+}

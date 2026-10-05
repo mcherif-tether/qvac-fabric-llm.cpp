@@ -274,6 +274,38 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const vec2 v = d * vec2(v0, v1);
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+#elif defined(DATA_A_TQ1_0_128)
+            // LOAD_VEC_A is 2: one idx covers the pair e0 = 2*iqs, e1 = e0+1 of a 128-element block.
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 64u;
+            const uint iqs = idx % 64u;
+            const float d = float(data_a[ib].d);
+            const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
+
+            float pair[2];
+            [[unroll]] for (uint lane = 0u; lane < 2u; ++lane) {
+                const uint e = 2u * iqs + lane;
+                uint qbyte;
+                uint t;
+                if (e < 80u) {
+                    t = e / 16u;
+                    qbyte = uint(data_a[ib].qs[e % 16u]);
+                } else if (e < 120u) {
+                    const uint ee = e - 80u;
+                    t = ee / 8u;
+                    qbyte = uint(data_a[ib].qs[16u + (ee % 8u)]);
+                } else {
+                    const uint ee = e - 120u;
+                    t = ee / 2u;
+                    qbyte = uint(data_a[ib].qh[ee % 2u]);
+                }
+                const uint q = (qbyte * pow3[t]) & 255u;
+                const uint xi = (q * 3u) >> 8u;
+                pair[lane] = float(int(xi) - 1);
+            }
+            buf_a[buf_idx] = FLOAT_TYPEV2(d * pair[0], d * pair[1]);
 #elif defined(DATA_A_TBQ3_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_TBQ3_0_64) || defined(DATA_A_PQ3_0_64)
             // LOAD_VEC_A is 2 for TBQ/PQ 3-bit variants (see vulkan-shaders-gen.cpp).
             // One idx step covers a pair of consecutive elements e0 = 2*iqs, e1 = e0 + 1.

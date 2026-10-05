@@ -66,7 +66,7 @@ class GGMLQuants:
         for t in (
             "q4_0", "q4_1", "q5_0", "q5_1", "q8_0",
             "q2_K", "q3_K", "q4_K", "q5_K", "q6_K",
-            "tq1_0", "tq2_0", "tq2_0_128",
+            "tq1_0", "tq1_0_128", "tq2_0", "tq2_0_128",
             "mxfp4",
             "nvfp4",
             "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s", "iq1_s", "iq1_m",

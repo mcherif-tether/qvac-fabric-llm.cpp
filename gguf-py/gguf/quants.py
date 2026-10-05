@@ -678,6 +678,49 @@ class TQ2_0_128(__Quant, qtype=GGMLQuantizationType.TQ2_0_128):
         return _tq2_0_dequantize_blocks(blocks, cls.block_size)
 
 
+class TQ1_0_128(__Quant, qtype=GGMLQuantizationType.TQ1_0_128):
+    """Block-128 TQ1: 16-byte 5-trit group (80), 8-byte 5-trit group (40), 2-byte qh (8), fp16 scale."""
+
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d = abs(blocks).max(axis=-1, keepdims=True)
+        with np.errstate(divide="ignore"):
+            id_ = np.where(d == 0, 0, 1 / d)
+        qs = np_roundf(blocks * id_)
+        qs = (qs.astype(np.int8) + np.int8(1)).astype(np.uint8)
+
+        # Powers are highest-trit first, matching the uint8 q = q*3+xi walk.
+        pow5 = np.array([81, 27, 9, 3, 1], dtype=np.uint8)
+        qs16 = qs[..., :80].reshape((n_blocks, 5, 16)) * pow5.reshape((1, 5, 1))
+        qs16 = np.sum(qs16, axis=1)
+        qs8 = qs[..., 80:120].reshape((n_blocks, 5, 8)) * pow5.reshape((1, 5, 1))
+        qs8 = np.sum(qs8, axis=1)
+        # Extra leading trit: 4 stored trits are weighted as if shifted once.
+        qh = qs[..., 120:].reshape((n_blocks, 4, 2)) * np.array([81, 27, 9, 3], dtype=np.uint8).reshape((1, 4, 1))
+        qh = np.sum(qh, axis=1)
+
+        packed = np.concatenate([qs16, qs8, qh], axis=-1)
+        packed = ((packed.astype(np.uint16) * 256 + (243 - 1)) // 243).astype(np.uint8)
+        d = d.astype(np.float16).view(np.uint8)
+        return np.concatenate([packed, d], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        qs, qh, d = np.hsplit(blocks, [24, 26])
+        d = d.view(np.float16).astype(np.float32)
+
+        pow5 = np.array([1, 3, 9, 27, 81], dtype=np.uint8)
+        qs16 = (qs[..., :16].reshape((n_blocks, 1, 16)) * pow5.reshape((1, 5, 1))).reshape((n_blocks, -1))
+        qs8 = (qs[..., 16:].reshape((n_blocks, 1, 8)) * pow5.reshape((1, 5, 1))).reshape((n_blocks, -1))
+        qh = (qh.reshape((n_blocks, 1, 2)) * np.array([1, 3, 9, 27], dtype=np.uint8).reshape((1, 4, 1))).reshape((n_blocks, -1))
+        vals = np.concatenate([qs16, qs8, qh], axis=-1)
+        vals = ((vals.astype(np.uint16) * 3) >> np.uint16(8)).astype(np.int8) - np.int8(1)
+        return d * vals.astype(np.float32)
+
+
 class MXFP4(__Quant, qtype=GGMLQuantizationType.MXFP4):
     # e2m1 values (doubled)
     # ref: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf

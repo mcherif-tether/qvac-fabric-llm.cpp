@@ -324,6 +324,42 @@ static __global__ void dequantize_block_tq2_0_128(const void * __restrict__ vx, 
     y[l + 96] = d * ((q >> 6) & 3) - d;
 }
 
+// One thread owns elements e, e+32, e+64 and e+96 of a 128-element block.
+static __device__ __forceinline__ int tq1_0_128_trit(const block_tq1_0_128 * xb, int e) {
+    const int pow3[5] = {1, 3, 9, 27, 81};
+    int byte;
+    int n;
+    if (e < 80) {
+        n = e / 16;
+        byte = xb->qs[e % 16];
+    } else if (e < 120) {
+        const int ee = e - 80;
+        n = ee / 8;
+        byte = xb->qs[16 + (ee % 8)];
+    } else {
+        const int ee = e - 120;
+        n = ee / 2;
+        byte = xb->qh[ee % 2];
+    }
+    const int q = (byte * pow3[n]) & 255;
+    return ((q * 3) >> 8) - 1;
+}
+
+template<typename dst_t>
+static __global__ void dequantize_block_tq1_0_128(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+    const int64_t i = blockIdx.x;
+    const block_tq1_0_128 * x = ((const block_tq1_0_128 *) vx) + i;
+    dst_t * y = yy + i*QK_TQ1_0_128;
+    const float d = __half2float(x->d);
+    const int e0 = threadIdx.x;
+
+#pragma unroll
+    for (int s = 0; s < 4; ++s) {
+        const int e = e0 + 32*s;
+        y[e] = d * tq1_0_128_trit(x, e);
+    }
+}
+
 template<typename dst_t>
 static __global__ void dequantize_block_iq2_xxs(const void * __restrict__ vx, dst_t * __restrict__ yy) {
 
@@ -603,6 +639,12 @@ static void dequantize_row_tq2_0_128_cuda(const void * vx, dst_t * y, const int6
 }
 
 template<typename dst_t>
+static void dequantize_row_tq1_0_128_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = k / QK_TQ1_0_128;
+    dequantize_block_tq1_0_128<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+template<typename dst_t>
 static void dequantize_row_iq2_xxs_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
     dequantize_block_iq2_xxs<<<nb, 32, 0, stream>>>(vx, y);
@@ -785,6 +827,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_tq2_0_cuda;
         case GGML_TYPE_TQ2_0_128:
             return dequantize_row_tq2_0_128_cuda;
+        case GGML_TYPE_TQ1_0_128:
+            return dequantize_row_tq1_0_128_cuda;
         case GGML_TYPE_IQ2_XXS:
             return dequantize_row_iq2_xxs_cuda;
         case GGML_TYPE_IQ2_XS:
@@ -844,6 +888,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_tq2_0_cuda;
         case GGML_TYPE_TQ2_0_128:
             return dequantize_row_tq2_0_128_cuda;
+        case GGML_TYPE_TQ1_0_128:
+            return dequantize_row_tq1_0_128_cuda;
         case GGML_TYPE_IQ2_XXS:
             return dequantize_row_iq2_xxs_cuda;
         case GGML_TYPE_IQ2_XS:

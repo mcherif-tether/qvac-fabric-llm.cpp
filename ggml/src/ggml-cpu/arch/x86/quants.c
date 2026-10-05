@@ -1453,6 +1453,14 @@ void ggml_vec_dot_tq2_0_128_q8_1(int n, float * GGML_RESTRICT s, size_t bs, cons
     ggml_vec_dot_tq2_0_128_q8_1_generic(n, s, bs, vx, bx, vy, by, nrc);
 }
 
+void ggml_vec_dot_tq1_0_128_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_tq1_0_128_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
+void ggml_vec_dot_tq1_0_128_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_tq1_0_128_q8_1_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
 void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);

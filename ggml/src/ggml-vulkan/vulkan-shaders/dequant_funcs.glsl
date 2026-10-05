@@ -486,6 +486,42 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TQ1_0_128)
+float dequantize1(uint ib, uint iqs, uint a_offset) {
+    const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
+    uint qbyte;
+    uint t;
+    if (iqs < 80u) {
+        t = iqs / 16u;
+        qbyte = uint(data_a[a_offset + ib].qs[iqs % 16u]);
+    } else if (iqs < 120u) {
+        const uint e = iqs - 80u;
+        t = e / 8u;
+        qbyte = uint(data_a[a_offset + ib].qs[16u + (e % 8u)]);
+    } else {
+        const uint e = iqs - 120u;
+        t = e / 2u;
+        qbyte = uint(data_a[a_offset + ib].qh[e % 2u]);
+    }
+    const uint q = (qbyte * pow3[t]) & 255u;
+    const uint xi = (q * 3u) >> 8u;
+    return float(int(xi) - 1);
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(dequantize1(ib, iqs, a_offset), dequantize1(ib, iqs + 1u, a_offset));
+}
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(
+        dequantize1(ib, iqs + 0u, a_offset),
+        dequantize1(ib, iqs + 1u, a_offset),
+        dequantize1(ib, iqs + 2u, a_offset),
+        dequantize1(ib, iqs + 3u, a_offset)
+    );
+}
+#endif
+
 #if defined(DATA_A_TQ2_0) || defined(DATA_A_TQ2_0_128)
 #include "tq_utils.glsl"
 
@@ -640,7 +676,7 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_Q4_0) || defined(DATA_A_Q5_0) || defined(DATA_A_Q8_0) || defined(DATA_A_TQ2_0) || defined(DATA_A_TQ2_0_128) || defined(DATA_A_TQ1_0) || defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || defined(DATA_A_TBQ3_0_64) || defined(DATA_A_TBQ4_0_64) || defined(DATA_A_PQ3_0_64) || defined(DATA_A_PQ4_0_64) || defined(DATA_A_IQ1_S) || defined(DATA_A_IQ2_XXS) || defined(DATA_A_IQ2_XS) || defined(DATA_A_IQ2_S) || defined(DATA_A_IQ3_XXS) || defined(DATA_A_IQ3_S) || defined(DATA_A_IQ4_XS) || defined(DATA_A_IQ4_NL)
+#if defined(DATA_A_Q4_0) || defined(DATA_A_Q5_0) || defined(DATA_A_Q8_0) || defined(DATA_A_TQ2_0) || defined(DATA_A_TQ2_0_128) || defined(DATA_A_TQ1_0) || defined(DATA_A_TQ1_0_128) || defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || defined(DATA_A_TBQ3_0_64) || defined(DATA_A_TBQ4_0_64) || defined(DATA_A_PQ3_0_64) || defined(DATA_A_PQ4_0_64) || defined(DATA_A_IQ1_S) || defined(DATA_A_IQ2_XXS) || defined(DATA_A_IQ2_XS) || defined(DATA_A_IQ2_S) || defined(DATA_A_IQ3_XXS) || defined(DATA_A_IQ3_S) || defined(DATA_A_IQ4_XS) || defined(DATA_A_IQ4_NL)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(float(data_a[a_offset + ib].d), 0);
 }

@@ -8174,6 +8174,28 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 512, 512, 1024, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 1024, 1024, 1024, {1, 1}, {1, 1}));
 
+    // TQ1_0_128: K must be a multiple of 128
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 1, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 2, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 4, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 8, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 32, 32, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 64, 64, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 128, 128, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 256, 256, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 512, 512, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 1024, 1024, 128, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 1, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 256, 256, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 512, 512, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 1024, 1024, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 1, 1024, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 2, 1024, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 16, 4, 1024, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 256, 256, 1024, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 512, 512, 1024, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 1024, 1024, 1024, {1, 1}, {1, 1}));
+
     for (ggml_type type_a : all_types) {
         for (int i = 1; i < 10; ++i) {
             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 256, { 1,  1}, {1, 1}));
@@ -8375,6 +8397,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_TQ2_0, GGML_TYPE_F32, 8, 8, false, 512, 1, 256, 1));
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 8, 8, false, 512, 1, 256));
     test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 8, 8, false, 512, 1, 256, 1));
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 8, 8, false, 512, 1, 256));
+    test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_TQ1_0_128, GGML_TYPE_F32, 8, 8, false, 512, 1, 256, 1));
     test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_F16, GGML_TYPE_F32, 16, 16, false, 32, 32, 32, 3));
 
     // gpt-oss issue with Vulkan mmq_id
@@ -8439,7 +8463,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_TQ1_0, GGML_TYPE_TQ2_0}) {
+    for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_TQ1_0, GGML_TYPE_TQ1_0_128, GGML_TYPE_TQ2_0}) {
         for (ggml_type type_b : {GGML_TYPE_F32, GGML_TYPE_F16}) {
             test_cases.emplace_back(new test_out_prod(type_a, type_b, 1024, 128, 151936, {1, 1}, {1, 1}));
             test_cases.emplace_back(new test_out_prod(type_a, type_b, 3072, 128, 1024, {1, 1}, {1, 1}));

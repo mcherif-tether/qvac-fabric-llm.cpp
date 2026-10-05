@@ -438,7 +438,8 @@ extern "C" {
         GGML_TYPE_PQ4_0     = 48, // PolarQuant 4-bit (Stage 1 only), block=128 (4.125 bpw)
         GGML_TYPE_PQ4_0_64  = 49, // PolarQuant 4-bit (Stage 1 only), block=64  (4.25 bpw)
         GGML_TYPE_TQ2_0_128 = 50, // TQ2 ternarization, block=128 (2.0625 bpw)
-        GGML_TYPE_COUNT     = 51,
+        GGML_TYPE_TQ1_0_128 = 51, // TQ1 ternarization, block=128 (1.75 bpw)
+        GGML_TYPE_COUNT     = 52,
     };
 
     // precision

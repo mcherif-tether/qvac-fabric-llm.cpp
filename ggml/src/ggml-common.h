@@ -277,6 +277,16 @@ typedef struct {
 } block_tq1_0;
 static_assert(sizeof(block_tq1_0) == sizeof(ggml_half) + QK_K / 64 + (QK_K - 4 * QK_K / 64) / 5, "wrong tq1_0 block size/padding");
 
+// 1.75 bpw. Block-128 cannot reuse the TQ1_0 32/16-byte qs walk (24-byte qs overflows),
+// so the 5-trit payload is an explicit 16-byte group (80 values) plus an 8-byte group (40 values).
+#define QK_TQ1_0_128 128
+typedef struct {
+    uint8_t qs[24]; // 16*5 + 8*5 = 120 elements
+    uint8_t qh[2];  // 4 elements per byte, 8 elements
+    ggml_half d;
+} block_tq1_0_128;
+static_assert(sizeof(block_tq1_0_128) == sizeof(ggml_half) + 26, "wrong tq1_0_128 block size/padding");
+
 // 2.0625 bpw; default super-block size is QK_K (256). Block-128 is the alternate layout.
 #define QK_TQ2_0_128 128
 typedef struct {

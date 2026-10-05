@@ -756,6 +756,36 @@ float16_t dequantFuncTQ1_0(const in decodeBufTQ1_0 bl, const in uint blockCoords
 }
 #endif
 
+#if defined(DATA_A_TQ1_0_128)
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ1_0_128 {
+   block_tq1_0_128 block;
+};
+
+float16_t dequantFuncTQ1_0_128(const in decodeBufTQ1_0_128 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
+    uint qbyte;
+    uint t;
+    if (idx < 80u) {
+        t = idx / 16u;
+        qbyte = uint(bl.block.qs[idx % 16u]);
+    } else if (idx < 120u) {
+        const uint e = idx - 80u;
+        t = e / 8u;
+        qbyte = uint(bl.block.qs[16u + (e % 8u)]);
+    } else {
+        const uint e = idx - 120u;
+        t = e / 2u;
+        qbyte = uint(bl.block.qh[e % 2u]);
+    }
+    const uint q = (qbyte * pow3[t]) & 255u;
+    const uint xi = (q * 3u) >> 8u;
+    return d * float16_t(float(xi) - 1.0f);
+}
+#endif
+
 #if defined(DATA_A_MXFP4)
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufMXFP4 {
    block_mxfp4 block;
@@ -887,6 +917,8 @@ DEQUANT_CM2_4BIT(PQ4_0_64,  block_pq4_0_64)
 #define dequantFuncA dequantFuncIQ4_NL
 #elif defined(DATA_A_TQ1_0)
 #define dequantFuncA dequantFuncTQ1_0
+#elif defined(DATA_A_TQ1_0_128)
+#define dequantFuncA dequantFuncTQ1_0_128
 #elif defined(DATA_A_MXFP4)
 #define dequantFuncA dequantFuncMXFP4
 #elif defined(DATA_A_NVFP4)

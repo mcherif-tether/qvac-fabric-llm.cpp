@@ -1,0 +1,36 @@
+#version 450
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+void main() {
+    const uint ib = gl_WorkGroupID.x;
+    if (ib >= p.nel / QUANT_K) {
+        return;
+    }
+
+    const uint e = gl_LocalInvocationID.x;
+    const float d = float(data_a[ib].d);
+    const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
+    uint qbyte;
+    uint t;
+    if (e < 80u) {
+        t = e / 16u;
+        qbyte = uint(data_a[ib].qs[e % 16u]);
+    } else if (e < 120u) {
+        const uint ee = e - 80u;
+        t = ee / 8u;
+        qbyte = uint(data_a[ib].qs[16u + (ee % 8u)]);
+    } else {
+        const uint ee = e - 120u;
+        t = ee / 2u;
+        qbyte = uint(data_a[ib].qh[ee % 2u]);
+    }
+    const uint q = (qbyte * pow3[t]) & 255u;
+    const uint xi = (q * 3u) >> 8u;
+    data_b[ib * QUANT_K + e] = D_TYPE(d * (float(xi) - 1.0f));
+}

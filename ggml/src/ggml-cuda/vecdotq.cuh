@@ -1066,6 +1066,47 @@ static __device__ __forceinline__ float vec_dot_tq2_0_128_q8_1(
     return vec_dot_tq2_0_q8_1_impl<VDR_TQ2_0_128_Q8_1_MMVQ>(v, u, btq2_0->d, d8);
 }
 
+#define VDR_TQ1_0_128_Q8_1_MMVQ 1
+
+// qi = 32, so one call covers quant index iqs (0..31). That index owns elements
+// iqs, iqs+32, iqs+64 and iqs+96, one from each of the four aligned q8_1 blocks.
+static __device__ __forceinline__ int tq1_0_128_trit(const block_tq1_0_128 * xb, int e) {
+    const int pow3[5] = {1, 3, 9, 27, 81};
+    int byte;
+    int n;
+    if (e < 80) {
+        n = e / 16;
+        byte = xb->qs[e % 16];
+    } else if (e < 120) {
+        const int ee = e - 80;
+        n = ee / 8;
+        byte = xb->qs[16 + (ee % 8)];
+    } else {
+        const int ee = e - 120;
+        n = ee / 2;
+        byte = xb->qh[ee % 2];
+    }
+    const int q = (byte * pow3[n]) & 255;
+    return ((q * 3) >> 8) - 1;
+}
+
+static __device__ __forceinline__ float vec_dot_tq1_0_128_q8_1(
+        const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1,
+        const int & kbx, const int & iqs) {
+    const block_tq1_0_128 * xb = (const block_tq1_0_128 *) vbq + kbx;
+    const float d = __half2float(xb->d);
+    float sumf = 0.0f;
+
+#pragma unroll
+    for (int s = 0; s < 4; ++s) {
+        const block_q8_1 * yb = bq8_1 + s;
+        const float dy = __low2float(yb->ds);
+        sumf += d * dy * float(tq1_0_128_trit(xb, iqs + 32*s) * int(yb->qs[iqs]));
+    }
+
+    return sumf;
+}
+
 #define VDR_IQ2_XXS_Q8_1_MMVQ 2
 #define VDR_IQ2_XXS_Q8_1_MMQ  2
 

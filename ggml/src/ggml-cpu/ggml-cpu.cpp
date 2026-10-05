@@ -456,6 +456,8 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
                 (src0->type == GGML_TYPE_TQ2_0 &&
                     (src1->type == GGML_TYPE_Q8_1 || src1->type == GGML_TYPE_Q8_0)) ||
                 (src0->type == GGML_TYPE_TQ2_0_128 &&
+                    (src1->type == GGML_TYPE_Q8_1 || src1->type == GGML_TYPE_Q8_0)) ||
+                (src0->type == GGML_TYPE_TQ1_0_128 &&
                     (src1->type == GGML_TYPE_Q8_1 || src1->type == GGML_TYPE_Q8_0));
         case GGML_OP_SOFT_MAX_BACK: {
             if (op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32) {

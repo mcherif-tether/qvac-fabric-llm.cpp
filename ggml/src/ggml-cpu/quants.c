@@ -113,6 +113,12 @@ void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, 
     quantize_row_tq2_0_ref(x, y, k);
 }
 
+void quantize_row_tq1_0_128(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_TQ1_0_128 == 0);
+    block_tq1_0_128 * GGML_RESTRICT y = vy;
+    quantize_row_tq1_0_128_ref(x, y, k);
+}
+
 void quantize_row_tq2_0_128(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
     assert(k % QK_TQ2_0_128 == 0);
     block_tq2_0_128 * GGML_RESTRICT y = vy;
@@ -1007,6 +1013,102 @@ void ggml_vec_dot_tq2_0_128_q8_K_generic(int n, float * GGML_RESTRICT s, size_t 
             }
 
             sumf += (float) sumi * GGML_CPU_FP16_TO_FP32(xb->d) * y[i].d;
+        }
+    }
+
+    *s = sumf;
+}
+
+static inline int tq1_0_128_trit(const block_tq1_0_128 * xb, int e) {
+    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+    uint8_t byte;
+    int n;
+    if (e < 80) {
+        n = e / 16;
+        byte = xb->qs[e % 16];
+    } else if (e < 120) {
+        const int ee = e - 80;
+        n = ee / 8;
+        byte = xb->qs[16 + (ee % 8)];
+    } else {
+        const int ee = e - 120;
+        n = ee / 2;
+        byte = xb->qh[ee % 2];
+    }
+    const uint8_t q = (uint8_t) (byte * pow3[n]);
+    return (int) (((uint16_t) q * 3) >> 8) - 1;
+}
+
+void ggml_vec_dot_tq1_0_128_q8_0_generic(
+        int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    GGML_ASSERT(n % QK_TQ1_0_128 == 0);
+    const int nb = n / QK_TQ1_0_128;
+    const int q8_blocks = QK_TQ1_0_128 / QK8_0;
+
+    const block_tq1_0_128 * GGML_RESTRICT x = vx;
+    const block_q8_0        * GGML_RESTRICT y = vy;
+
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float dx = GGML_CPU_FP16_TO_FP32(x[ib].d);
+        const block_q8_0 * y_blocks = y + ib * q8_blocks;
+
+        for (int qb = 0; qb < q8_blocks; ++qb) {
+            const block_q8_0 * yb = &y_blocks[qb];
+            const float dy = GGML_CPU_FP16_TO_FP32(yb->d);
+
+            int32_t sumi = 0;
+            for (int k = 0; k < QK8_0; ++k) {
+                sumi += tq1_0_128_trit(&x[ib], qb * QK8_0 + k) * yb->qs[k];
+            }
+
+            sumf += (float) sumi * dx * dy;
+        }
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_tq1_0_128_q8_1_generic(
+        int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    GGML_ASSERT(n % QK_TQ1_0_128 == 0);
+    const int nb = n / QK_TQ1_0_128;
+    const int q8_blocks = QK_TQ1_0_128 / QK8_1;
+
+    const block_tq1_0_128 * GGML_RESTRICT x = vx;
+    const block_q8_1        * GGML_RESTRICT y = vy;
+
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float dx = GGML_CPU_FP16_TO_FP32(x[ib].d);
+        const block_q8_1 * y_blocks = y + ib * q8_blocks;
+
+        for (int qb = 0; qb < q8_blocks; ++qb) {
+            const block_q8_1 * yb = &y_blocks[qb];
+            const float dy = GGML_CPU_FP16_TO_FP32(yb->d);
+
+            int32_t sumi = 0;
+            for (int k = 0; k < QK8_1; ++k) {
+                sumi += tq1_0_128_trit(&x[ib], qb * QK8_1 + k) * yb->qs[k];
+            }
+
+            sumf += (float) sumi * dx * dy;
         }
     }
 

@@ -1714,6 +1714,24 @@ struct block_tq1_0 {
 #define A_TYPE block_tq1_0
 #endif
 
+// TQ1_0_128: 16-byte 5-trit group (80), 8-byte 5-trit group (40), 2-byte qh (8), fp16 scale.
+// QUANT_R is 1 so get_rows stores the consecutive pair dequantize() returns.
+#define QUANT_K_TQ1_0_128 128
+#define QUANT_R_TQ1_0_128 1
+
+struct block_tq1_0_128 {
+    uint8_t qs[24];
+    uint8_t qh[2];
+    float16_t d;
+};
+
+#if defined(DATA_A_TQ1_0_128)
+#define QUANT_K QUANT_K_TQ1_0_128
+#define QUANT_R QUANT_R_TQ1_0_128
+#define QUANT_AUXF 1
+#define A_TYPE block_tq1_0_128
+#endif
+
 // TQ2_0
 #define QUANT_K_TQ2_0 256
 #define QUANT_R_TQ2_0 4

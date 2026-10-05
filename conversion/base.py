@@ -910,6 +910,7 @@ class ModelBase:
                 ):
                     if self.ftype in (
                         gguf.LlamaFileType.MOSTLY_TQ1_0,
+                        gguf.LlamaFileType.MOSTLY_TQ1_0_128,
                         gguf.LlamaFileType.MOSTLY_TQ2_0,
                     ):
                         # TODO: use Q4_K and Q6_K
@@ -927,6 +928,8 @@ class ModelBase:
                         data_qtype = gguf.GGMLQuantizationType.Q8_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ1_0:
                         data_qtype = gguf.GGMLQuantizationType.TQ1_0
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ1_0_128:
+                        data_qtype = gguf.GGMLQuantizationType.TQ1_0_128
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ2_0:
                         data_qtype = gguf.GGMLQuantizationType.TQ2_0
                     else:
