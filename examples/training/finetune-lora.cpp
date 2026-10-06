@@ -266,6 +266,8 @@ static void print_lora_usage() {
     printf("  --output-adapter PATH      Output path for trained adapter (default: auto-generated)\n");
     printf("\nTraining Options:\n");
     printf("  --num-epochs N             Number of training epochs (default: 1)\n");
+    printf("  --train-split F            Fraction of datapoints for training (default: 0.8, range: (0, 1])\n");
+    printf("                             Validation fraction is 1 - train-split\n");
     printf("  --assistant-loss-only      Use JSON dataset format with masked loss (ChatML/conversation format)\n");
     printf("                             Only computes loss on assistant responses, not system/user prompts\n");
     printf("  --chat-template PATH  Optional Jinja chat template to render JSON dataset (matches HF apply_chat_template)\n");
@@ -488,6 +490,7 @@ struct finetune_params {
     std::string output_adapter_path;
 
     int32_t num_epochs = 1;
+    float train_split = 0.8f;
     float learning_rate = 1e-5f;
     float lr_min = 0.0f;
     float weight_decay = 0.01f;
@@ -552,6 +555,10 @@ static bool parse_finetune_args(int& argc, char** argv, finetune_params& ft_para
             i--;
         } else if (strcmp(argv[i], "--num-epochs") == 0 && i + 1 < argc) {
             ft_params.num_epochs = std::atoi(argv[i + 1]);
+            remove_arg_pair(i);
+            i--;
+        } else if ((strcmp(argv[i], "--train-split") == 0 || strcmp(argv[i], "-train-split") == 0) && i + 1 < argc) {
+            ft_params.train_split = std::atof(argv[i + 1]);
             remove_arg_pair(i);
             i--;
         } else if (strcmp(argv[i], "--learning-rate") == 0 && i + 1 < argc) {
@@ -636,6 +643,11 @@ int main(int argc, char ** argv) {
         LOG_ERR("Number of epochs must be > 0, got %d\n", ft_params.num_epochs);
         return 1;
     }
+    if (ft_params.train_split <= 0.0f || ft_params.train_split > 1.0f) {
+        LOG_ERR("train-split must be in (0, 1], got %f\n", ft_params.train_split);
+        return 1;
+    }
+    const float val_split = 1.0f - ft_params.train_split;
     if (ft_params.learning_rate <= 0.0f) {
         LOG_ERR("Learning rate must be > 0, got %.4e\n", ft_params.learning_rate);
         return 1;
@@ -768,8 +780,6 @@ int main(int argc, char ** argv) {
         }
     }
 
-    constexpr float val_split = 0.05f;
-
     ggml_opt_dataset_t dataset;
 
     if (ft_params.assistant_loss_only) {
@@ -791,7 +801,7 @@ int main(int argc, char ** argv) {
     const int64_t training_batches_per_epoch = idata_split;
 
     if (training_batches_per_epoch <= 0) {
-        LOG_ERR("Training split is empty. Adjust --val-split or dataset size.\n");
+        LOG_ERR("Training split is empty. Adjust --train-split or dataset size.\n");
         return 1;
     }
 
@@ -818,8 +828,12 @@ int main(int argc, char ** argv) {
     lr_scheduler.current_step = 0;
     lr_scheduler.last_lr = lora_scheduler_lr_for_step(lr_scheduler, lr_scheduler.current_step);
 
-    LOG_INF("Training split: datapoints=%lld, batches_per_epoch=%lld\n",
-        (long long) total_datapoints, (long long) training_batches_per_epoch);
+    LOG_INF("Training split: train_split=%.4f train=%lld val=%lld total=%lld batches_per_epoch=%lld\n",
+        ft_params.train_split,
+        (long long) idata_split,
+        (long long) (total_datapoints - idata_split),
+        (long long) total_datapoints,
+        (long long) training_batches_per_epoch);
     LOG_INF("Optimizer: adamw scheduler=%s lr=%.4e wd=%.4e total_steps=%lld\n",
             lora_lr_scheduler_type_to_cstr(lr_scheduler.schedule), lr_scheduler.lr_init,
             lr_scheduler.weight_decay, (long long) lr_scheduler.total_steps);
