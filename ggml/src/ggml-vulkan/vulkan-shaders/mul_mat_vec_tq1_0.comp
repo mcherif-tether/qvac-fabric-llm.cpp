@@ -22,7 +22,9 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
 
     const uint pow3[5] = uint[5](1u, 3u, 9u, 27u, 81u);
     for (uint nrow = 0; nrow < num_rows; ++nrow) {
-        const uint ib0 = a_offset / QUANT_K + (first_row + nrow) * num_blocks_per_row;
+        // get_offsets() already returns the A offset in quant blocks. Dividing
+        // it by QUANT_K again selects the wrong expert matrix for MUL_MAT_ID.
+        const uint ib0 = a_offset + (first_row + nrow) * num_blocks_per_row;
         for (uint jcol = 0; jcol < NUM_COLS; ++jcol) {
             const uint b_base = (jcol * p.batch_stride_b);
             for (uint i = tid/8; i < num_blocks_per_row; i += gl_WorkGroupSize.x/8) {
