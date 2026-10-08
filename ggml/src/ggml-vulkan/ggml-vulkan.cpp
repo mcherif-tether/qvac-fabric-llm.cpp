@@ -16403,7 +16403,15 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     // FLOP budget: replaces the byte budget when enabled (see ggml_vk_submit_config).
     uint64_t batch_flops = 0;
     uint64_t total_flops = 0;
-    uint64_t flops_per_submit = std::min(submit_cfg.flops_cap, ctx->last_total_flops / 40u);
+    // Budget from this graph's own FLOPs, not the previous graph's: the first graph of a process (the first
+    // prefill) has no history, and upstream's previous-graph rule leaves it with no budget at all (E59).
+    uint64_t graph_flops = 0;
+    if (submit_cfg.use_flops) {
+        for (int j = 0; j < cgraph->n_nodes; j++) {
+            graph_flops += ggml_vk_get_node_flops(cgraph->nodes[j]);
+        }
+    }
+    uint64_t flops_per_submit = std::min(submit_cfg.flops_cap, graph_flops / 40u);
     uint64_t batch_max_node_flops = 0;
     int      batch_max_node = -1;
     if (submit_cfg.use_flops) {
