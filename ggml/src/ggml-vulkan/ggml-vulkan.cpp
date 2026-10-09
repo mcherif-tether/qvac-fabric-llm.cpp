@@ -2140,6 +2140,7 @@ struct ggml_backend_vk_context {
     bool do_add_rms_partials;
 
     uint64_t last_total_mul_mat_bytes {};
+    uint64_t last_total_flops {};
 
     // Cache most recent tensor that was converted into prealloc_y, and what pipeline it used to convert.
     vk_pipeline_struct * prealloc_y_last_pipeline_used {};
@@ -16255,6 +16256,71 @@ static int32_t find_first_set(uint32_t x) {
     return ret;
 }
 
+// Estimated work of a graph node, for sizing GPU submissions by compute rather than by weight bytes.
+// Same estimate as upstream llama.cpp's ggml_vk_get_node_flops (MUL_MAT_ID counts only the experts used).
+static uint64_t ggml_vk_get_node_flops(const ggml_tensor * node) {
+    if (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) {
+        const uint64_t m     = node->ne[0];
+        const uint64_t n     = node->ne[1];
+        const uint64_t k     = node->src[1]->ne[0];
+        const uint64_t batch = node->ne[2] * node->ne[3];
+        return m * n * (k + (k - 1)) * batch;
+    }
+    if (node->op == GGML_OP_CONV_2D || node->op == GGML_OP_CONV_TRANSPOSE_2D) {
+        const ggml_tensor * knl = node->src[0];
+        const uint64_t Cout   = node->ne[2];
+        const uint64_t size_K = node->src[1]->ne[2] * knl->ne[0] * knl->ne[1];
+        const uint64_t size_N = node->ne[3] * node->ne[0] * node->ne[1];
+        return Cout * size_N * (size_K + (size_K - 1));
+    }
+    if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+        const ggml_tensor * q = node->src[0];
+        const ggml_tensor * k = node->src[1];
+        const ggml_tensor * v = node->src[2];
+        return 2ull * q->ne[1] * q->ne[2] * (k->ne[0] + v->ne[0]) * k->ne[1] * q->ne[3];
+    }
+    return 0;
+}
+
+// Submission sizing on Adreno. Long prefills can keep a single submission on the GPU past the kernel
+// driver's watchdog (kgsl "gpu timeout", vk::DeviceLostError). The weight-byte budget used for other
+// devices does not grow with the batch size, while GPU time does. Like upstream llama.cpp, which sizes
+// submissions by FLOPs and lowers the cap on weaker AMD GPUs for the same reason, Adreno uses a FLOP
+// budget: min(cap, 1/40 of the graph's FLOPs), doubled three times, so a submission reaches at most 8x
+// the cap. Adreno 830, 512-token prefill: cap 10 completes for dense ternary, Q4_0 and a 35B ternary MoE;
+// cap 20 loses the device for Q4_0 and the MoE. Every other device keeps the byte budget.
+//   GGML_VK_SUBMIT_FLOPS=1|0         force the FLOP budget on or off (default: on for Adreno only)
+//   GGML_VK_SUBMIT_FLOPS_CAP=<GFLOP> cap per submission (default 10 on Adreno, 200 elsewhere)
+//   GGML_VK_MAX_NODES_PER_SUBMIT=<n> node cap per submission (default 100, upstream's setting)
+//   GGML_VK_SUBMIT_LOG=1             print one line per submission (nodes, GFLOP, largest node)
+struct vk_submit_config {
+    bool     use_flops;
+    uint64_t flops_cap;
+    int      max_nodes;
+    bool     log;
+};
+
+static vk_submit_config ggml_vk_submit_config(const vk_device & device) {
+    vk_submit_config c;
+    c.use_flops = device->architecture == vk_device_architecture::QUALCOMM_ADRENO;
+    if (const char * e = getenv("GGML_VK_SUBMIT_FLOPS")) {
+        c.use_flops = atoi(e) != 0;
+    }
+    c.flops_cap = (device->architecture == vk_device_architecture::QUALCOMM_ADRENO ? 10ull : 200ull) * 1000 * 1000 * 1000;
+    if (const char * e = getenv("GGML_VK_SUBMIT_FLOPS_CAP")) {
+        const double gflop = atof(e);
+        if (gflop > 0) {
+            c.flops_cap = (uint64_t)(gflop * 1e9);
+        }
+    }
+    c.max_nodes = 100;
+    if (const char * e = getenv("GGML_VK_MAX_NODES_PER_SUBMIT")) {
+        c.max_nodes = std::max(atoi(e), 1);
+    }
+    c.log = getenv("GGML_VK_SUBMIT_LOG") != nullptr;
+    return c;
+}
+
 static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
@@ -16330,12 +16396,30 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     // Estimate the amount of matmul work by looking at the weight matrix size, and submit every 100MB
     // (and scaled down based on model size, so smaller models submit earlier).
     // Also submit at least every 100 nodes, in case there are workloads without as much matmul.
-    int nodes_per_submit = 100;
+    const vk_submit_config submit_cfg = ggml_vk_submit_config(ctx->device);
+    int nodes_per_submit = submit_cfg.max_nodes;
     int submitted_nodes = 0;
     int submit_count = 0;
     uint64_t mul_mat_bytes = 0;
     uint64_t total_mul_mat_bytes = 0;
     uint64_t mul_mat_bytes_per_submit = std::min(uint64_t(100*1000*1000), ctx->last_total_mul_mat_bytes / 40u);
+    // FLOP budget: replaces the byte budget when enabled (see ggml_vk_submit_config).
+    uint64_t batch_flops = 0;
+    uint64_t total_flops = 0;
+    // Budget from this graph's own FLOPs, not the previous graph's: the first graph of a process (the first
+    // prefill) has no history, and a previous-graph rule would leave it with no budget at all.
+    uint64_t graph_flops = 0;
+    if (submit_cfg.use_flops) {
+        for (int j = 0; j < cgraph->n_nodes; j++) {
+            graph_flops += ggml_vk_get_node_flops(cgraph->nodes[j]);
+        }
+    }
+    uint64_t flops_per_submit = std::min(submit_cfg.flops_cap, graph_flops / 40u);
+    uint64_t batch_max_node_flops = 0;
+    int      batch_max_node = -1;
+    if (submit_cfg.use_flops) {
+        mul_mat_bytes_per_submit = 0;
+    }
     for (int i = 0; i < cgraph->n_nodes; i++) {
         if (first_node_in_batch) {
             submit_node_idx = i;
@@ -16345,6 +16429,15 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
             auto bytes = ggml_nbytes(cgraph->nodes[i]->src[0]);
             mul_mat_bytes += bytes;
             total_mul_mat_bytes += bytes;
+        }
+        if (submit_cfg.use_flops) {
+            const uint64_t node_flops = ggml_vk_get_node_flops(cgraph->nodes[i]);
+            batch_flops += node_flops;
+            total_flops += node_flops;
+            if (node_flops > batch_max_node_flops) {
+                batch_max_node_flops = node_flops;
+                batch_max_node = i;
+            }
         }
 
         // op_srcs_fused_elementwise indicates whether an op's srcs all contribute to
@@ -16535,8 +16628,17 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
 
         // Signal the almost_ready fence when the graph is mostly complete (< 20% remaining)
         bool almost_ready = (cgraph->n_nodes - i) < cgraph->n_nodes / 5;
+        // Like upstream, close the batch before a node that would push it over the FLOP budget,
+        // so one large node starts a fresh submission instead of extending a full one.
+        bool flops_full = false;
+        if (submit_cfg.use_flops && flops_per_submit != 0) {
+            const int next = i + ctx->num_additional_fused_ops + 1;
+            const uint64_t next_flops = next < cgraph->n_nodes ? ggml_vk_get_node_flops(cgraph->nodes[next]) : 0;
+            flops_full = batch_flops >= flops_per_submit || batch_flops + next_flops >= flops_per_submit;
+        }
         bool submit = (submitted_nodes >= nodes_per_submit) ||
                       (mul_mat_bytes_per_submit != 0 && mul_mat_bytes >= mul_mat_bytes_per_submit) ||
+                      flops_full ||
                       (i + ctx->num_additional_fused_ops >= last_node) ||
                       (almost_ready && !ctx->almost_ready_fence_pending);
 
@@ -16567,11 +16669,22 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
         }
 
         if (submit && enqueued) {
+            if (submit_cfg.log) {
+                GGML_LOG_INFO("ggml_vulkan: submit %d: nodes %d-%d, %.2f GFLOP (budget %.2f), largest node %.2f GFLOP %s %s\n",
+                    submit_count, submit_node_idx, i + ctx->num_additional_fused_ops, batch_flops / 1e9, flops_per_submit / 1e9,
+                    batch_max_node_flops / 1e9,
+                    batch_max_node >= 0 ? ggml_op_name(cgraph->nodes[batch_max_node]->op) : "-",
+                    batch_max_node >= 0 ? cgraph->nodes[batch_max_node]->name : "");
+            }
             first_node_in_batch = true;
             submitted_nodes = 0;
             mul_mat_bytes = 0;
+            batch_flops = 0;
+            batch_max_node_flops = 0;
+            batch_max_node = -1;
             if (submit_count < 3) {
                 mul_mat_bytes_per_submit *= 2;
+                flops_per_submit *= 2;
             }
             submit_count++;
         }
@@ -16581,6 +16694,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     }
 
     ctx->last_total_mul_mat_bytes = total_mul_mat_bytes;
+    ctx->last_total_flops = total_flops;
 
     if (vk_perf_logger_enabled) {
         // End the command buffer and submit/wait
