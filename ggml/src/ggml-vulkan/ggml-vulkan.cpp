@@ -2142,6 +2142,15 @@ struct ggml_backend_vk_context {
     uint64_t last_total_mul_mat_bytes {};
     uint64_t last_total_flops {};
 
+    // Per-submission GPU timing (GGML_VK_SUBMIT_TIME=1): a timestamp at the start and at the end of each
+    // submission's command buffer, read back as they complete.
+    vk::QueryPool submit_query_pool;
+    uint32_t submit_query_count {};
+    bool submit_timing {};       // timing is active for the graph being recorded
+    bool submit_ts_open {};      // the current batch has its start timestamp
+    uint32_t submit_ts_next {};  // next free query
+    bool submit_ts_split {};     // the current batch was flushed early by a buffer resize (see preallocate)
+
     // Cache most recent tensor that was converted into prealloc_y, and what pipeline it used to convert.
     vk_pipeline_struct * prealloc_y_last_pipeline_used {};
     const ggml_tensor * prealloc_y_last_tensor_used {};
@@ -14630,6 +14639,10 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
 #endif
 
     if (subctx) {
+        if (ctx->submit_ts_open) {
+            // The timed batch is flushed here and resumed below, so its timing includes this CPU wait.
+            ctx->submit_ts_split = true;
+        }
         // Submit and wait for any pending work before reallocating the buffers
         ggml_vk_ctx_end(subctx);
         ggml_vk_submit(subctx, {});
@@ -15187,6 +15200,10 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
 #endif
 
     if (submit || last_node) {
+        if (ctx->submit_ts_open) {
+            compute_ctx->s->buffer->buf.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, ctx->submit_query_pool, ctx->submit_ts_next++);
+            ctx->submit_ts_open = false;
+        }
         ggml_vk_ctx_end(compute_ctx);
 
         // TODO probably it'd be better to pass a exit_node flag to ggml_vk_compute_forward
@@ -15319,6 +15336,12 @@ static void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
 
     ctx->device->device.destroyFence(ctx->fence);
     ctx->device->device.destroyFence(ctx->almost_ready_fence);
+
+    if (ctx->submit_query_pool) {
+        ctx->device->device.destroyQueryPool(ctx->submit_query_pool);
+        ctx->submit_query_pool = nullptr;
+        ctx->submit_query_count = 0;
+    }
 
     for (auto& pool : ctx->descriptor_pools) {
         ctx->device->device.destroyDescriptorPool(pool);
@@ -16293,11 +16316,15 @@ static uint64_t ggml_vk_get_node_flops(const ggml_tensor * node) {
 //   GGML_VK_SUBMIT_FLOPS_CAP=<GFLOP> cap per submission (default 10 on Adreno, 200 elsewhere)
 //   GGML_VK_MAX_NODES_PER_SUBMIT=<n> node cap per submission (default 100, upstream's setting)
 //   GGML_VK_SUBMIT_LOG=1             print one line per submission (nodes, GFLOP, largest node)
+//   GGML_VK_SUBMIT_TIME=1            print each submission's GPU time and the idle time before it, read from
+//                                    GPU timestamps, plus a summary per graph. Measurement only: it adds a
+//                                    wait for the GPU at the end of each graph, and does not change sizing.
 struct vk_submit_config {
     bool     use_flops;
     uint64_t flops_cap;
     int      max_nodes;
     bool     log;
+    bool     time;
 };
 
 static vk_submit_config ggml_vk_submit_config(const vk_device & device) {
@@ -16318,6 +16345,7 @@ static vk_submit_config ggml_vk_submit_config(const vk_device & device) {
         c.max_nodes = std::max(atoi(e), 1);
     }
     c.log = getenv("GGML_VK_SUBMIT_LOG") != nullptr;
+    c.time = getenv("GGML_VK_SUBMIT_TIME") != nullptr;
     return c;
 }
 
@@ -16417,6 +16445,69 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     uint64_t flops_per_submit = std::min(submit_cfg.flops_cap, graph_flops / 40u);
     uint64_t batch_max_node_flops = 0;
     int      batch_max_node = -1;
+
+    // Per-submission GPU timing (see ggml_vk_submit_config). Off while the perf logger owns the timestamps.
+    ctx->submit_timing = submit_cfg.time && !vk_perf_logger_enabled &&
+                         ctx->device->properties.limits.timestampComputeAndGraphics;
+    ctx->submit_ts_open = false;
+    ctx->submit_ts_split = false;
+    ctx->submit_ts_next = 0;
+    std::vector<double> submit_gflop;    // per closed submission
+    std::vector<bool>   submit_split;    // per closed submission: flushed early by a buffer resize
+    uint32_t submit_printed = 0;
+    uint64_t submit_prev_end = 0, submit_first_start = 0, submit_last_end = 0;
+    double   submit_busy_ms = 0.0, submit_idle_ms = 0.0, submit_max_ms = 0.0;
+    int      submit_max_idx = -1;
+    if (ctx->submit_timing) {
+        const uint32_t need = 2u * (uint32_t)cgraph->n_nodes + 2u;
+        if (ctx->submit_query_count < need) {
+            if (ctx->submit_query_pool) {
+                ctx->device->device.destroyQueryPool(ctx->submit_query_pool);
+            }
+            vk::QueryPoolCreateInfo qci;
+            qci.queryType = vk::QueryType::eTimestamp;
+            qci.queryCount = need;
+            ctx->submit_query_pool = ctx->device->device.createQueryPool(qci);
+            ctx->submit_query_count = need;
+        }
+        // Reset on the GPU timeline, ahead of the first timestamp of this graph.
+        vk_context reset_ctx = ggml_vk_get_compute_ctx(ctx);
+        reset_ctx->s->buffer->buf.resetQueryPool(ctx->submit_query_pool, 0, ctx->submit_query_count);
+    }
+    // Print the timings of closed submissions whose timestamps are available (all of them when wait is true).
+    auto print_submit_times = [&](bool wait) {
+        const double period_ns = ctx->device->properties.limits.timestampPeriod;
+        while (submit_printed < (uint32_t)submit_gflop.size()) {
+            uint64_t q[4] = {};  // start, start available, end, end available
+            vk::QueryResultFlags flags = vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability;
+            if (wait) {
+                flags |= vk::QueryResultFlagBits::eWait;
+            }
+            const vk::Result r = ctx->device->device.getQueryPoolResults(ctx->submit_query_pool, 2 * submit_printed, 2,
+                                                                          sizeof(q), q, 2 * sizeof(uint64_t), flags);
+            if ((r != vk::Result::eSuccess && r != vk::Result::eNotReady) || q[1] == 0 || q[3] == 0) {
+                break;
+            }
+            const double ms      = (double)(q[2] - q[0]) * period_ns / 1e6;
+            const double idle_ms = submit_printed == 0 ? 0.0 : (double)(q[0] - submit_prev_end) * period_ns / 1e6;
+            const double gflop   = submit_gflop[submit_printed];
+            GGML_LOG_INFO("ggml_vulkan: submit %u time: %.1f ms GPU, %.1f ms idle before, %.2f GFLOP, %.1f GFLOP/s%s\n",
+                          submit_printed, ms, idle_ms, gflop, ms > 0.0 ? gflop / (ms / 1e3) : 0.0,
+                          submit_split[submit_printed] ? " (split by a buffer resize: includes a CPU wait)" : "");
+            if (submit_printed == 0) {
+                submit_first_start = q[0];
+            }
+            submit_busy_ms += ms;
+            submit_idle_ms += idle_ms;
+            if (ms > submit_max_ms) {
+                submit_max_ms  = ms;
+                submit_max_idx = (int)submit_printed;
+            }
+            submit_prev_end = q[2];
+            submit_last_end = q[2];
+            submit_printed++;
+        }
+    };
     if (submit_cfg.use_flops) {
         mul_mat_bytes_per_submit = 0;
     }
@@ -16430,7 +16521,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
             mul_mat_bytes += bytes;
             total_mul_mat_bytes += bytes;
         }
-        if (submit_cfg.use_flops) {
+        if (submit_cfg.use_flops || ctx->submit_timing) {
             const uint64_t node_flops = ggml_vk_get_node_flops(cgraph->nodes[i]);
             batch_flops += node_flops;
             total_flops += node_flops;
@@ -16642,6 +16733,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                       (i + ctx->num_additional_fused_ops >= last_node) ||
                       (almost_ready && !ctx->almost_ready_fence_pending);
 
+        if (ctx->submit_timing && !ctx->submit_ts_open) {
+            vk_context ts_ctx = ggml_vk_get_compute_ctx(ctx);
+            ts_ctx->s->buffer->buf.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, ctx->submit_query_pool, ctx->submit_ts_next++);
+            ctx->submit_ts_open = true;
+        }
         bool enqueued = ggml_vk_build_graph(ctx, cgraph, i, cgraph->nodes[submit_node_idx], submit_node_idx, i + ctx->num_additional_fused_ops >= last_node, almost_ready, submit);
 
         if (vk_perf_logger_enabled && enqueued) {
@@ -16676,6 +16772,12 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                     batch_max_node >= 0 ? ggml_op_name(cgraph->nodes[batch_max_node]->op) : "-",
                     batch_max_node >= 0 ? cgraph->nodes[batch_max_node]->name : "");
             }
+            if (ctx->submit_timing) {
+                submit_gflop.push_back(batch_flops / 1e9);
+                submit_split.push_back(ctx->submit_ts_split);
+                ctx->submit_ts_split = false;
+                print_submit_times(false);
+            }
             first_node_in_batch = true;
             submitted_nodes = 0;
             mul_mat_bytes = 0;
@@ -16695,6 +16797,18 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
 
     ctx->last_total_mul_mat_bytes = total_mul_mat_bytes;
     ctx->last_total_flops = total_flops;
+
+    if (ctx->submit_timing) {
+        print_submit_times(true);
+        const double period_ns = ctx->device->properties.limits.timestampPeriod;
+        const double wall_ms = submit_printed > 0 ? (double)(submit_last_end - submit_first_start) * period_ns / 1e6 : 0.0;
+        GGML_LOG_INFO("ggml_vulkan: graph time: %u of %zu submissions timed, %.1f ms GPU busy, %.1f ms idle between, %.1f ms span, "
+                      "longest submission %.1f ms (submit %d), %.2f GFLOP total\n",
+                      submit_printed, submit_gflop.size(), submit_busy_ms, submit_idle_ms, wall_ms, submit_max_ms, submit_max_idx,
+                      total_flops / 1e9);
+        ctx->submit_timing = false;
+        ctx->submit_ts_open = false;
+    }
 
     if (vk_perf_logger_enabled) {
         // End the command buffer and submit/wait
