@@ -16470,9 +16470,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
             ctx->submit_query_pool = ctx->device->device.createQueryPool(qci);
             ctx->submit_query_count = need;
         }
-        // Reset on the GPU timeline, ahead of the first timestamp of this graph.
-        vk_context reset_ctx = ggml_vk_get_compute_ctx(ctx);
-        reset_ctx->s->buffer->buf.resetQueryPool(ctx->submit_query_pool, 0, ctx->submit_query_count);
+        // Reset from the host, as the perf logger does: a reset recorded into the command buffer only takes effect
+        // once the GPU runs it, so the first non-blocking poll of a graph could read the previous graph's results
+        // with their availability bits still set. The previous graph waited for all of its queries, so none are in use.
+        ctx->device->device.resetQueryPool(ctx->submit_query_pool, 0, ctx->submit_query_count);
     }
     // Print the timings of closed submissions whose timestamps are available (all of them when wait is true).
     auto print_submit_times = [&](bool wait) {
