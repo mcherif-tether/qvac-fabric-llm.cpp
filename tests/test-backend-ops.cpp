@@ -9209,6 +9209,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Qwen3-4B prefill shapes (m, k): q (4096, 2560), k/v (1024, 2560), o (2560, 4096), gate/up (9728, 2560),
+    // down (2560, 9728), at prefill chunks of 128 and 512 tokens, for 4-bit and the group-128 ternary format.
+    // Select them with -p "k=2560|k=4096|k=9728" plus a type, e.g. -p "type_a=q4_0.*n=512".
+    for (int bs : {128, 512}) {
+        for (ggml_type type_a : {GGML_TYPE_Q4_0, GGML_TYPE_TQ2_0_128}) {
+            for (auto mk : std::vector<std::pair<int, int>>{{4096, 2560}, {1024, 2560}, {2560, 4096}, {9728, 2560}, {2560, 9728}}) {
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, mk.first, bs, mk.second, {1, 1}, {1, 1}));
+            }
+        }
+    }
+
     // qwen3-30b-a3b
     for (int bs : {1, 4, 8, 32, 64, 128, 256, 512}) {
         for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS}) {
