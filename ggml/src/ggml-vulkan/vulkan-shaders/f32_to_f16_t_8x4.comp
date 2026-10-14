@@ -1,0 +1,28 @@
+#version 450
+
+// Adreno prefill matmul, step 2 of 3: activations (src1, N rows of K floats) to fp16, transposed to K rows of Npad
+// values (Npad = N rounded up to 8, padding zero), the layout kernel_mul_mat_Ab_Bi_8x4 (ggml-opencl) reads.
+// One invocation per output element.
+
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform parameter {
+    uint K;
+    uint N;
+    uint Npad;
+    uint stride;  // elements between rows of src1
+} p;
+
+layout(binding = 0) readonly  buffer S { float s[]; };
+layout(binding = 1) writeonly buffer T { float16_t t[]; };
+
+void main() {
+    const uint n = gl_GlobalInvocationID.x;
+    const uint k = gl_GlobalInvocationID.y;
+    if (n >= p.Npad || k >= p.K) {
+        return;
+    }
+    t[k * p.Npad + n] = n < p.N ? float16_t(s[n * p.stride + k]) : float16_t(0.0);
+}

@@ -1,0 +1,67 @@
+#version 450
+
+// Adreno prefill matmul, step 1 of 3: repack Q4_0 weights into the layout of the OpenCL Adreno kernel
+// kernel_mul_mat_Ab_Bi_8x4 (ggml-opencl): quants and scales in separate arrays, four consecutive k values of one row
+// in one 16-bit word, and the words of four neighbouring rows side by side, so that one invocation of
+// mul_mm_8x4_q4_0.comp loads its four rows with a single 64-bit read.
+//
+//   qa[(k/4) * (M/4) + r/4] : uvec2 = 16-bit words of rows r..r+3 for k..k+3 (nibble t of a word = k+t, value + 8)
+//   da[(k/32) * (M/4) + r/4] : f16vec4 = scales of rows r..r+3 for the block holding k
+//
+// One invocation per (group of four rows, block of 32 k values).
+
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_control_flow_attributes : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform parameter {
+    uint M;   // rows (src0->ne[1]), multiple of 4
+    uint K;   // inner size (src0->ne[0]), multiple of 32
+} p;
+
+struct block_q4_0_packed16 {
+    float16_t d;
+    uint16_t qs[8];
+};
+
+layout(binding = 0) readonly  buffer A  { block_q4_0_packed16 a[]; };
+layout(binding = 1) writeonly buffer QA { uvec2 qa[]; };
+layout(binding = 2) writeonly buffer DA { f16vec4 da[]; };
+
+uint nibble(const uint row_block, const uint e) {
+    // Q4_0: byte j holds element j in its low nibble and element j + 16 in its high nibble
+    const uint j = e & 15u;
+    const uint w = uint(a[row_block].qs[j >> 1]);
+    const uint byte_ = (w >> (8u * (j & 1u))) & 0xFFu;
+    return e < 16u ? (byte_ & 0xFu) : (byte_ >> 4u);
+}
+
+void main() {
+    const uint M4 = p.M / 4u;
+    const uint r4 = gl_GlobalInvocationID.x;
+    const uint b  = gl_GlobalInvocationID.y;
+    if (r4 >= M4 || b >= p.K / 32u) {
+        return;
+    }
+    const uint nb = p.K / 32u;
+
+    uint rb[4];
+    [[unroll]] for (uint j = 0; j < 4u; ++j) {
+        rb[j] = (4u * r4 + j) * nb + b;
+    }
+
+    [[unroll]] for (uint g = 0; g < 8u; ++g) {
+        uint w[4];
+        [[unroll]] for (uint j = 0; j < 4u; ++j) {
+            uint v = 0u;
+            [[unroll]] for (uint t = 0; t < 4u; ++t) {
+                v |= nibble(rb[j], 4u * g + t) << (4u * t);
+            }
+            w[j] = v;
+        }
+        qa[(b * 8u + g) * M4 + r4] = uvec2(w[0] | (w[1] << 16u), w[2] | (w[3] << 16u));
+    }
+    da[b * M4 + r4] = f16vec4(a[rb[0]].d, a[rb[1]].d, a[rb[2]].d, a[rb[3]].d);
+}

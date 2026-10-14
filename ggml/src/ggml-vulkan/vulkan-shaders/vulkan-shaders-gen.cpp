@@ -1114,6 +1114,13 @@ void process_shaders() {
     string_to_spv("fa_mask_opt", "flash_attn_mask_opt.comp", {});
 
     string_to_spv("quantize_q8_1", "quantize_q8_1.comp", {});
+
+    // Prefill matmul for Q4_0 on Adreno, a port of the OpenCL Adreno kernel (8x4 register blocks), see mul_mm_8x4_q4_0.comp.
+    // Names must not start with "adreno_": that prefix marks the Adreno compiler-workaround variants of other shaders.
+    string_to_spv("repack_q4_0_8x4", "repack_q4_0_8x4.comp", {});
+    string_to_spv("f32_to_f16_t_8x4", "f32_to_f16_t_8x4.comp", {});
+    string_to_spv("mul_mm_8x4_q4_0_f16acc", "mul_mm_8x4_q4_0.comp", {});
+    string_to_spv("mul_mm_8x4_q4_0_f32acc", "mul_mm_8x4_q4_0.comp", {{"ACC_F32", "1"}});
     string_to_spv("quantize_q8_1_subgroup", "quantize_q8_1.comp", {{"USE_SUBGROUPS", "1"}});
 
     string_to_spv("quantize_q8_1_x4", "quantize_q8_1.comp", {{"QBLOCK_X4", "1"}});

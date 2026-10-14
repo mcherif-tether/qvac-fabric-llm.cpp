@@ -1,0 +1,81 @@
+#version 450
+
+// Adreno prefill matmul, step 3 of 3: a port of the OpenCL Adreno kernel kernel_mul_mat_Ab_Bi_8x4 (ggml-opencl,
+// mul_mat_Ab_Bi_8x4.cl). Each invocation computes an 8 x 4 block of the output (8 tokens, 4 rows) in registers.
+// No shared memory and no barriers. Weights and activations come in the layouts written by repack_q4_0_8x4.comp
+// and f32_to_f16_t_8x4.comp. Accumulation is fp16 like the original; ACC_F32 builds an fp32 variant for
+// measuring the precision and speed cost of that choice.
+// Differences from the OpenCL original, on purpose for this first port: activations are read from a storage buffer
+// rather than through the texture path, and the workgroup size is a specialization constant.
+
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_control_flow_attributes : require
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+layout(constant_id = 0) const uint WG = 128;
+
+layout(push_constant) uniform parameter {
+    uint M;         // rows (src0->ne[1]), multiple of 4
+    uint N;         // tokens (src1->ne[1])
+    uint Npad;      // N rounded up to 8
+    uint K;         // inner size, multiple of 32
+    uint stride_d;  // elements between output rows (one row per token), multiple of 4
+} p;
+
+layout(binding = 0) readonly  buffer QA { uvec2 qa[]; };
+layout(binding = 1) readonly  buffer DA { f16vec4 da[]; };
+layout(binding = 2) readonly  buffer B  { f16vec4 bt[]; };
+layout(binding = 3) writeonly buffer D  { vec4 d[]; };
+
+#ifdef ACC_F32
+#define ACC_T  vec4
+#define ACC_S  float
+#else
+#define ACC_T  f16vec4
+#define ACC_S  float16_t
+#endif
+
+void main() {
+    const uint M4 = p.M / 4u;
+    const uint gx = gl_GlobalInvocationID.x;  // group of 4 rows
+    const uint gy = gl_WorkGroupID.y;         // group of 8 tokens
+    if (gx >= M4) {
+        return;
+    }
+    const uint N4 = p.Npad / 4u;
+
+    ACC_T lo[4];  // tokens 0..3, one vector per row
+    ACC_T hi[4];  // tokens 4..7
+    [[unroll]] for (uint r = 0; r < 4u; ++r) {
+        lo[r] = ACC_T(0.0);
+        hi[r] = ACC_T(0.0);
+    }
+
+    for (uint i = 0; i < p.K; i += 4u) {
+        const uvec2 q = qa[(i / 4u) * M4 + gx];
+        const f16vec4 s = da[(i / 32u) * M4 + gx];
+        const uint u[4] = uint[4](q.x & 0xFFFFu, q.x >> 16u, q.y & 0xFFFFu, q.y >> 16u);
+
+        [[unroll]] for (uint j = 0; j < 4u; ++j) {
+            const ACC_T b_lo = ACC_T(bt[(i + j) * N4 + gy * 2u]);
+            const ACC_T b_hi = ACC_T(bt[(i + j) * N4 + gy * 2u + 1u]);
+            [[unroll]] for (uint r = 0; r < 4u; ++r) {
+                const ACC_S w = ACC_S(float16_t(int((u[r] >> (4u * j)) & 0xFu) - 8) * s[r]);
+                lo[r] += b_lo * w;
+                hi[r] += b_hi * w;
+            }
+        }
+    }
+
+    const uint n0 = gy * 8u;
+    const uint row_vec = p.stride_d / 4u;
+    [[unroll]] for (uint t = 0; t < 4u; ++t) {
+        if (n0 + t < p.N) {
+            d[(n0 + t) * row_vec + gx] = vec4(lo[0][t], lo[1][t], lo[2][t], lo[3][t]);
+        }
+        if (n0 + 4u + t < p.N) {
+            d[(n0 + 4u + t) * row_vec + gx] = vec4(hi[0][t], hi[1][t], hi[2][t], hi[3][t]);
+        }
+    }
+}

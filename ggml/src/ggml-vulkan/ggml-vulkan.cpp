@@ -752,6 +752,14 @@ struct vk_device_struct {
     vk_pipeline pipeline_matmul_split_k_reduce;
     vk_pipeline pipeline_quantize_q8_1_x4;
 
+    // Adreno prefill matmul for Q4_0, a port of the OpenCL Adreno kernel (GGML_VK_ADRENO_MM=1, off by default)
+    bool adreno_mm {};
+    bool adreno_mm_f32acc {};
+    uint32_t adreno_mm_wg {128};
+    vk_pipeline pipeline_adreno_q4_0_repack;
+    vk_pipeline pipeline_adreno_f32_to_f16_t;
+    vk_pipeline pipeline_mul_mm_adreno_q4_0;
+
     vk_pipeline pipeline_dequant[GGML_TYPE_COUNT];
     vk_pipeline pipeline_dequant_mul_mat_vec_f32_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
     vk_pipeline pipeline_dequant_mul_mat_vec_f16_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
@@ -5056,6 +5064,16 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_mul_mm_tbq_qjl[GGML_TYPE_TBQ4_0_64][0], "mul_mm_qjl_tbq4_0_64_f32", mul_mm_qjl_tbq4_0_64_f32_len, mul_mm_qjl_tbq4_0_64_f32_data, "main", 3, sizeof(vk_mat_mat_push_constants), {1, 1, 1}, tbq_qjl_spec_consts, 1, false, false, tbq_copy_sg_req);
     ggml_vk_create_pipeline(device, device->pipeline_mul_mm_tbq_qjl[GGML_TYPE_TBQ4_0_64][1], "mul_mm_qjl_tbq4_0_64_f16", mul_mm_qjl_tbq4_0_64_f16_len, mul_mm_qjl_tbq4_0_64_f16_data, "main", 3, sizeof(vk_mat_mat_push_constants), {1, 1, 1}, tbq_qjl_spec_consts, 1, false, false, tbq_copy_sg_req);
 
+    if (device->adreno_mm) {
+        ggml_vk_create_pipeline(device, device->pipeline_adreno_q4_0_repack, "repack_q4_0_8x4", repack_q4_0_8x4_len, repack_q4_0_8x4_data, "main", 3, 2 * sizeof(uint32_t), {64, 1, 1}, {}, 1);
+        ggml_vk_create_pipeline(device, device->pipeline_adreno_f32_to_f16_t, "f32_to_f16_t_8x4", f32_to_f16_t_8x4_len, f32_to_f16_t_8x4_data, "main", 2, 4 * sizeof(uint32_t), {64, 1, 1}, {}, 1);
+        if (device->adreno_mm_f32acc) {
+            ggml_vk_create_pipeline(device, device->pipeline_mul_mm_adreno_q4_0, "mul_mm_8x4_q4_0_f32acc", mul_mm_8x4_q4_0_f32acc_len, mul_mm_8x4_q4_0_f32acc_data, "main", 4, 5 * sizeof(uint32_t), {device->adreno_mm_wg, 1, 1}, { device->adreno_mm_wg }, 1);
+        } else {
+            ggml_vk_create_pipeline(device, device->pipeline_mul_mm_adreno_q4_0, "mul_mm_8x4_q4_0_f16acc", mul_mm_8x4_q4_0_f16acc_len, mul_mm_8x4_q4_0_f16acc_data, "main", 4, 5 * sizeof(uint32_t), {device->adreno_mm_wg, 1, 1}, { device->adreno_mm_wg }, 1);
+        }
+    }
+
     if (device->subgroup_clustered && device->subgroup_require_full_support) {
         ggml_vk_create_pipeline(device, device->pipeline_quantize_q8_1_x4, "quantize_q8_1_x4", quantize_q8_1_x4_subgroup_len, quantize_q8_1_x4_subgroup_data, "main", 2, sizeof(vk_quantize_q8_1_push_constants), {32 * device->subgroup_size / 8, 1, 1}, { device->subgroup_size }, 1, true, true);
     } else {
@@ -6544,6 +6562,22 @@ static vk_device ggml_vk_get_device(size_t idx) {
             dsl_binding);
         descriptor_set_layout_create_info.setPNext(&dslbfci);
         device->dsl = device->device.createDescriptorSetLayout(descriptor_set_layout_create_info);
+
+        // Adreno prefill matmul for Q4_0 (port of the OpenCL Adreno kernel). Off unless GGML_VK_ADRENO_MM=1; it needs
+        // fp16 arithmetic and 16-bit storage. GGML_VK_ADRENO_MM_F32ACC=1 accumulates in fp32 instead of fp16, and
+        // GGML_VK_ADRENO_MM_WG sets the workgroup size (default 128, as the OpenCL kernel).
+        {
+            const char * env = getenv("GGML_VK_ADRENO_MM");
+            device->adreno_mm = env != nullptr && strcmp(env, "1") == 0 && device->fp16;
+            device->adreno_mm_f32acc = getenv("GGML_VK_ADRENO_MM_F32ACC") != nullptr;
+            const char * wg = getenv("GGML_VK_ADRENO_MM_WG");
+            if (wg != nullptr) {
+                const unsigned long v = strtoul(wg, nullptr, 10);
+                if (v == 32 || v == 64 || v == 128 || v == 256 || v == 512) {
+                    device->adreno_mm_wg = (uint32_t)v;
+                }
+            }
+        }
 
         ggml_vk_load_shaders(device);
 
@@ -8868,7 +8902,149 @@ static void ggml_vk_matmul_tiling(ggml_backend_vk_context *ctx, vk_context& subc
     }
 }
 
+// Adreno prefill matmul for Q4_0 x F32 (GGML_VK_ADRENO_MM=1): a port of the OpenCL Adreno kernel
+// kernel_mul_mat_Ab_Bi_8x4. Three dispatches: repack the weights (prealloc_x), convert and transpose the activations
+// to fp16 (prealloc_y), then the register-blocked matmul. The repack runs on every call in this first version.
+static bool ggml_vk_adreno_mm_applies(const ggml_backend_vk_context * ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
+    if (!ctx->device->adreno_mm || ctx->device->pipeline_mul_mm_adreno_q4_0 == nullptr) {
+        return false;
+    }
+    if (src0->type != GGML_TYPE_Q4_0 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst)) {
+        return false;
+    }
+    if (src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1) {
+        return false;
+    }
+    const uint64_t K = src0->ne[0];
+    const uint64_t M = src0->ne[1];
+    const uint64_t N = src1->ne[1];
+    if (M % 4 != 0 || K % 32 != 0 || N < 2) {
+        return false;
+    }
+    const uint64_t npad = (N + 7) / 8 * 8;
+    const uint64_t limit = ctx->device->properties.limits.maxStorageBufferRange;
+    return K * M / 2 <= limit && K * npad * 2 <= limit && M * N * 4 <= limit;
+}
+
+static void ggml_vk_mul_mat_adreno_q4_0(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    const uint32_t K = (uint32_t)src0->ne[0];
+    const uint32_t M = (uint32_t)src0->ne[1];
+    const uint32_t N = (uint32_t)src1->ne[1];
+    const uint32_t npad = (N + 7) / 8 * 8;
+
+    vk_pipeline repack = ctx->device->pipeline_adreno_q4_0_repack;
+    vk_pipeline to_f16_t = ctx->device->pipeline_adreno_f32_to_f16_t;
+    vk_pipeline mm = ctx->device->pipeline_mul_mm_adreno_q4_0;
+
+    const uint64_t align = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
+    const uint64_t qa_sz = (uint64_t)K * M / 2;                 // 4 bits per weight
+    const uint64_t da_off = ggml_vk_align_size(qa_sz, align);
+    const uint64_t da_sz = (uint64_t)(K / 32) * M * 2;          // one fp16 scale per 32 weights
+    const uint64_t x_sz = da_off + da_sz;
+    const uint64_t y_sz = (uint64_t)K * npad * 2;               // fp16 activations, transposed
+    const uint64_t qx_sz = ggml_nbytes(src0);
+    const uint64_t qy_sz = ggml_nbytes(src1);
+    const uint64_t d_sz = ggml_nbytes(dst);
+
+    if (ctx->prealloc_size_x < x_sz) {
+        ctx->prealloc_size_x = x_sz;
+        ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    if (ctx->prealloc_size_y < y_sz) {
+        ctx->prealloc_size_y = y_sz;
+        ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    ggml_pipeline_request_descriptor_sets(ctx, repack, 1);
+    ggml_pipeline_request_descriptor_sets(ctx, to_f16_t, 1);
+    ggml_pipeline_request_descriptor_sets(ctx, mm, 1);
+
+    ggml_backend_vk_buffer_context * dst_buf_ctx = (ggml_backend_vk_buffer_context *)dst->buffer->context;
+    ggml_backend_vk_buffer_context * src0_buf_ctx = (ggml_backend_vk_buffer_context *)src0->buffer->context;
+    ggml_backend_vk_buffer_context * src1_buf_ctx = (ggml_backend_vk_buffer_context *)src1->buffer->context;
+
+    vk_buffer d_Qx = nullptr;
+    size_t qx_buf_offset = 0;
+    vk_buffer d_Qy = nullptr;
+    size_t qy_buf_offset = 0;
+    if (ctx->device->uma) {
+        ggml_vk_host_get(ctx->device, src0->data, d_Qx, qx_buf_offset);
+        ggml_vk_host_get(ctx->device, src1->data, d_Qy, qy_buf_offset);
+    }
+    if (d_Qx == nullptr) {
+        d_Qx = src0_buf_ctx->dev_buffer;
+        qx_buf_offset = vk_tensor_offset(src0) + src0->view_offs;
+    }
+    if (d_Qy == nullptr) {
+        d_Qy = src1_buf_ctx->dev_buffer;
+        qy_buf_offset = vk_tensor_offset(src1) + src1->view_offs;
+    }
+    vk_buffer d_D = dst_buf_ctx->dev_buffer;
+    const uint64_t d_buf_offset = vk_tensor_offset(dst) + dst->view_offs;
+    vk_buffer d_X = ctx->prealloc_x;
+    vk_buffer d_Y = ctx->prealloc_y;
+    GGML_ASSERT(d_Qx != nullptr && d_Qy != nullptr && d_D != nullptr);
+    GGML_ASSERT(d_X->size >= x_sz && d_Y->size >= y_sz);
+
+    // 1. weights
+    if (ctx->prealloc_x_need_sync) {
+        ggml_vk_sync_buffers(ctx, subctx);
+    }
+    {
+        const std::array<uint32_t, 2> pc = { M, K };
+        ggml_vk_dispatch_pipeline(ctx, subctx, repack,
+            { vk_subbuffer{ d_Qx, qx_buf_offset, qx_sz }, vk_subbuffer{ d_X, 0, qa_sz }, vk_subbuffer{ d_X, da_off, da_sz } },
+            pc, { M / 4, K / 32, 1 });
+    }
+
+    // 2. activations, skipped when the previous op already converted this src1 (as the q8_1 path does)
+    if (ctx->prealloc_y_last_pipeline_used != to_f16_t.get() || ctx->prealloc_y_last_tensor_used != src1) {
+        if (ctx->prealloc_y_need_sync) {
+            ggml_vk_sync_buffers(ctx, subctx);
+        }
+        const uint32_t stride = (uint32_t)(src1->nb[1] / sizeof(float));
+        const std::array<uint32_t, 4> pc = { K, N, npad, stride };
+        ggml_vk_dispatch_pipeline(ctx, subctx, to_f16_t,
+            { vk_subbuffer{ d_Qy, qy_buf_offset, qy_sz }, vk_subbuffer{ d_Y, 0, y_sz } },
+            pc, { npad, K, 1 });
+        ctx->prealloc_y_last_pipeline_used = to_f16_t.get();
+        ctx->prealloc_y_last_tensor_used = src1;
+    }
+    ggml_vk_sync_buffers(ctx, subctx);
+
+    // 3. matmul: one invocation per 4 rows x 8 tokens
+    {
+        const uint32_t stride_d = (uint32_t)(dst->nb[1] / sizeof(float));
+        GGML_ASSERT(stride_d % 4 == 0);
+        const std::array<uint32_t, 5> pc = { M, N, npad, K, stride_d };
+        ggml_vk_dispatch_pipeline(ctx, subctx, mm,
+            { vk_subbuffer{ d_X, 0, qa_sz }, vk_subbuffer{ d_X, da_off, da_sz }, vk_subbuffer{ d_Y, 0, y_sz }, vk_subbuffer{ d_D, d_buf_offset, d_sz } },
+            pc, { M / 4, npad / 8, 1 });
+    }
+
+    ctx->prealloc_x_need_sync = true;
+    ctx->prealloc_y_need_sync = true;
+
+    static const bool matmul_log = getenv("GGML_VK_MATMUL_LOG") != nullptr;
+    if (matmul_log) {
+        static std::mutex log_mutex;
+        static std::set<std::string> seen;
+        const std::string key = mm->name + " " + std::to_string(M) + " " + std::to_string(N) + " " + std::to_string(K);
+        std::lock_guard<std::mutex> guard(log_mutex);
+        if (seen.insert(key).second) {
+            GGML_LOG_INFO("ggml_vulkan: matmul q4_0 x f32 m=%u n=%u k=%u: pipeline %s (Adreno port), workgroup %u\n",
+                          M, N, K, mm->name.c_str(), ctx->device->adreno_mm_wg);
+        }
+    }
+}
+
 static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, bool disable_split_k) {
+    if (ggml_vk_adreno_mm_applies(ctx, src0, src1, dst)) {
+        ggml_vk_mul_mat_adreno_q4_0(ctx, subctx, src0, src1, dst);
+        return;
+    }
     VK_LOG_DEBUG("ggml_vk_mul_mat_q_f16((" << src0 << ", name=" << src0->name << ", type=" << ggml_type_name(src0->type) << ", ne0=" << src0->ne[0] << ", ne1=" << src0->ne[1] << ", ne2=" << src0->ne[2] << ", ne3=" << src0->ne[3] << ", nb0=" << src0->nb[0] << ", nb1=" << src0->nb[1] << ", nb2=" << src0->nb[2] << ", nb3=" << src0->nb[3];
     std::cerr << "), (" << src1 << ", name=" << src1->name << ", type=" << ggml_type_name(src1->type) << ", ne0=" << src1->ne[0] << ", ne1=" << src1->ne[1] << ", ne2=" << src1->ne[2] << ", ne3=" << src1->ne[3] << ", nb0=" << src1->nb[0] << ", nb1=" << src1->nb[1] << ", nb2=" << src1->nb[2] << ", nb3=" << src1->nb[3];
     std::cerr << "), (" << dst << ", name=" << dst->name << ", type=" << ggml_type_name(dst->type) << ", ne0=" << dst->ne[0] << ", ne1=" << dst->ne[1] << ", ne2=" << dst->ne[2] << ", ne3=" << dst->ne[3] << ", nb0=" << dst->nb[0] << ", nb1=" << dst->nb[1] << ", nb2=" << dst->nb[2] << ", nb3=" << dst->nb[3];
