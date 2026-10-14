@@ -9007,6 +9007,24 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
             << ", num_dispatches=" << num_dispatches);
     }
 
+    // GGML_VK_MATMUL_LOG=1: print which batched-matmul pipeline runs for each distinct shape, once per process.
+    {
+        static const bool matmul_log = getenv("GGML_VK_MATMUL_LOG") != nullptr;
+        if (matmul_log) {
+            static std::mutex log_mutex;
+            static std::set<std::string> seen;
+            const std::string key = pipeline->name + " " + std::to_string(ne01) + " " + std::to_string(ne11) + " " + std::to_string(ne10);
+            std::lock_guard<std::mutex> guard(log_mutex);
+            if (seen.insert(key).second) {
+                GGML_LOG_INFO("ggml_vulkan: matmul %s x %s m=%" PRId64 " n=%" PRId64 " k=%" PRId64 ": pipeline %s, tile %ux%u, "
+                              "aligned %d, quantize_y %d, dequant_x %d, split_k %u, tiling %d (%" PRIu64 " dispatches)\n",
+                              ggml_type_name(src0->type), ggml_type_name(src1->type), ne01, ne11, ne10, pipeline->name.c_str(),
+                              pipeline->wg_denoms[0], pipeline->wg_denoms[1], (int)aligned, (int)quantize_y,
+                              (int)qx_needs_dequant, split_k, (int)do_tiling, num_dispatches);
+            }
+        }
+    }
+
     {
         if (do_tiling) {
             ctx->prealloc_size_tile = ctx->device->tiling_threshold;
