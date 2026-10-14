@@ -8160,6 +8160,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0, GGML_TYPE_F32, 16, 4, 1024, {1, 1}, {1, 1}));
 
     // TQ2_0_128: K must be a multiple of 128
+    // Q4_0 at Qwen3-4B prefill shapes (m, k), with a token count that is a multiple of 8 and one that is not: the
+    // shapes the Adreno 8x4 prefill matmul (GGML_VK_ADRENO_MM=1) is written for, and long k for its fp16 accumulation.
+    for (int n : {128, 129}) {
+        for (auto mk : std::vector<std::pair<int, int>>{{4096, 2560}, {1024, 2560}, {2560, 4096}, {9728, 2560}, {2560, 9728}}) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
+        }
+    }
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 16, 1, 128, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 16, 2, 128, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ2_0_128, GGML_TYPE_F32, 16, 4, 128, {1, 1}, {1, 1}));
