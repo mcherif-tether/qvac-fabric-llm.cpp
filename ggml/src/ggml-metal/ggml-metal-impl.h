@@ -157,6 +157,9 @@
 #define OP_SUM_ROWS_NUM_SUM_ROWS 10
 #define OP_SUM_ROWS_NUM_MEAN     11
 
+#define GGML_METAL_OUT_PROD_TQ_TILE 16
+#define GGML_METAL_OUT_PROD_TQ1_TILE GGML_METAL_OUT_PROD_TQ_TILE
+
 // kernel argument structs
 //
 // - element counters (e.g. ne00) typically use int32_t to reduce register usage

@@ -4616,16 +4616,25 @@ int ggml_metal_op_out_prod(ggml_metal_op_t ctx, int idx) {
 
     auto pipeline = ggml_metal_library_get_pipeline_out_prod(lib, op);
 
-    const int threads = ne0 < 1 ? 1 : (int) ne0;
-    const int nth = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), threads);
-
     ggml_metal_encoder_set_pipeline(enc, pipeline);
     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
 
-    ggml_metal_encoder_dispatch_threadgroups(enc, ne1, ne2, ne3, nth, 1, 1);
+    if (op->src[0]->type == GGML_TYPE_TQ1_0 ||
+        op->src[0]->type == GGML_TYPE_TQ2_0 ||
+        op->src[0]->type == GGML_TYPE_TQ2_0_128) {
+        const int tile = GGML_METAL_OUT_PROD_TQ_TILE;
+        const int ntgx = (ne0 + tile - 1) / tile;
+        const int ntgy = (ne1 + tile - 1) / tile;
+        const int ntgz = ne2 * ne3;
+        ggml_metal_encoder_dispatch_threadgroups(enc, ntgx, ntgy, ntgz, tile, tile, 1);
+    } else {
+        const int threads = ne0 < 1 ? 1 : (int) ne0;
+        const int nth = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), threads);
+        ggml_metal_encoder_dispatch_threadgroups(enc, ne1, ne2, ne3, nth, 1, 1);
+    }
 
     return 1;
 }

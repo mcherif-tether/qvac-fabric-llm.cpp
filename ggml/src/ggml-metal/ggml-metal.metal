@@ -1998,6 +1998,159 @@ typedef decltype(kernel_out_prod_q4_0_impl<half >) kernel_out_prod_q4_0_f16_t;
 template [[host_name("kernel_out_prod_q4_0_f32")]] kernel kernel_out_prod_q4_0_f32_t kernel_out_prod_q4_0_impl<float>;
 template [[host_name("kernel_out_prod_q4_0_f16")]] kernel kernel_out_prod_q4_0_f16_t kernel_out_prod_q4_0_impl<half>;
 
+template <typename src1_t>
+kernel void kernel_out_prod_tq1_0_impl(
+    constant ggml_metal_kargs_out_prod & args,
+    device const char * src0,
+    device const char * src1,
+    device       char * dst,
+    uint3   tgpig[[threadgroup_position_in_grid]],
+    ushort3 tpitg[[thread_position_in_threadgroup]]) {
+    constexpr int TILE = GGML_METAL_OUT_PROD_TQ1_TILE;
+    threadgroup float asub[TILE][TILE];
+    threadgroup float bsub[TILE][TILE];
+
+    const int col = (int) tgpig.x * TILE + (int) tpitg.x;
+    const int row = (int) tgpig.y * TILE + (int) tpitg.y;
+    const int i2  = (int) tgpig.z % args.ne2;
+    const int i3  = (int) tgpig.z / args.ne2;
+
+    const int dps2 = args.ne02 > 0 ? args.ne2 / args.ne02 : 1;
+    const int dps3 = args.ne03 > 0 ? args.ne3 / args.ne03 : 1;
+    const int i02  = args.ne02 > 0 ? i2 / dps2 : 0;
+    const int i03  = args.ne03 > 0 ? i3 / dps3 : 0;
+
+    const int K = args.ne01;
+    const int M = args.ne0;
+    const int N = args.ne1;
+
+    float acc = 0.0f;
+    const int ntiles = (K + TILE - 1) / TILE;
+
+    for (int t = 0; t < ntiles; ++t) {
+        const int a_k = t * TILE + (int) tpitg.y;
+        const int b_k = t * TILE + (int) tpitg.x;
+
+        if (col < M && a_k < K) {
+            device const char * src0_row = src0 + (uint64_t) i02*args.nb02 + (uint64_t) i03*args.nb03 + (uint64_t) a_k*args.nb01;
+            device const block_tq1_0 * blk = ((device const block_tq1_0 *) src0_row) + (col / QK_K);
+            asub[tpitg.y][tpitg.x] = (float) blk->d * (float) tq1_0_trit(blk, col % QK_K);
+        } else {
+            asub[tpitg.y][tpitg.x] = 0.0f;
+        }
+
+        if (row < N && b_k < K) {
+            device const src1_t * b = (device const src1_t *)(
+                src1 + (uint64_t) row*args.nb10 + (uint64_t) b_k*args.nb11 + (uint64_t) i2*args.nb12 + (uint64_t) i3*args.nb13);
+            bsub[tpitg.x][tpitg.y] = (float) b[0];
+        } else {
+            bsub[tpitg.x][tpitg.y] = 0.0f;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (int k = 0; k < TILE; ++k) {
+            acc += asub[k][tpitg.x] * bsub[k][tpitg.y];
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row < N && col < M) {
+        device float * d = (device float *)(
+            dst + (uint64_t) col*args.nb0 + (uint64_t) row*args.nb1 + (uint64_t) i2*args.nb2 + (uint64_t) i3*args.nb3);
+        d[0] = acc;
+    }
+}
+
+typedef decltype(kernel_out_prod_tq1_0_impl<float>) kernel_out_prod_tq1_0_f32_t;
+typedef decltype(kernel_out_prod_tq1_0_impl<half >) kernel_out_prod_tq1_0_f16_t;
+
+template [[host_name("kernel_out_prod_tq1_0_f32")]] kernel kernel_out_prod_tq1_0_f32_t kernel_out_prod_tq1_0_impl<float>;
+template [[host_name("kernel_out_prod_tq1_0_f16")]] kernel kernel_out_prod_tq1_0_f16_t kernel_out_prod_tq1_0_impl<half>;
+
+// TQ2 packs 2-bit values in 128-element groups of 32 bytes.
+// Element e lives in qs[(e/128)*32 + e%32], bit pair ((e%128)/32). Value is (q - 1) * d.
+// Same order as dequantize_row_tq2_0 and dequantize_row_tq2_0_128.
+template <typename block_t>
+static inline float tq2_dequant(device const block_t * blk, int e) {
+    const int byte = (e / 128) * 32 + (e % 32);
+    const int shift = ((e % 128) / 32) * 2;
+    const int q = (int) (blk->qs[byte] >> shift) & 3;
+    return (float) blk->d * (float) (q - 1);
+}
+
+template <typename block_t, int QK>
+kernel void kernel_out_prod_tq2_impl(
+    constant ggml_metal_kargs_out_prod & args,
+    device const char * src0,
+    device const char * src1,
+    device       char * dst,
+    uint3   tgpig[[threadgroup_position_in_grid]],
+    ushort3 tpitg[[thread_position_in_threadgroup]]) {
+    constexpr int TILE = GGML_METAL_OUT_PROD_TQ_TILE;
+    threadgroup float asub[TILE][TILE];
+    threadgroup float bsub[TILE][TILE];
+
+    const int col = (int) tgpig.x * TILE + (int) tpitg.x;
+    const int row = (int) tgpig.y * TILE + (int) tpitg.y;
+    const int i2  = (int) tgpig.z % args.ne2;
+    const int i3  = (int) tgpig.z / args.ne2;
+
+    const int dps2 = args.ne02 > 0 ? args.ne2 / args.ne02 : 1;
+    const int dps3 = args.ne03 > 0 ? args.ne3 / args.ne03 : 1;
+    const int i02  = args.ne02 > 0 ? i2 / dps2 : 0;
+    const int i03  = args.ne03 > 0 ? i3 / dps3 : 0;
+
+    const int K = args.ne01;
+    const int M = args.ne0;
+    const int N = args.ne1;
+
+    float acc = 0.0f;
+    const int ntiles = (K + TILE - 1) / TILE;
+
+    for (int t = 0; t < ntiles; ++t) {
+        const int a_k = t * TILE + (int) tpitg.y;
+        const int b_k = t * TILE + (int) tpitg.x;
+
+        if (col < M && a_k < K) {
+            device const char * src0_row = src0 + (uint64_t) i02*args.nb02 + (uint64_t) i03*args.nb03 + (uint64_t) a_k*args.nb01;
+            device const block_t * blk = ((device const block_t *) src0_row) + (col / QK);
+            asub[tpitg.y][tpitg.x] = tq2_dequant(blk, col % QK);
+        } else {
+            asub[tpitg.y][tpitg.x] = 0.0f;
+        }
+
+        if (row < N && b_k < K) {
+            device const float * b = (device const float *)(
+                src1 + (uint64_t) row*args.nb10 + (uint64_t) b_k*args.nb11 + (uint64_t) i2*args.nb12 + (uint64_t) i3*args.nb13);
+            bsub[tpitg.x][tpitg.y] = b[0];
+        } else {
+            bsub[tpitg.x][tpitg.y] = 0.0f;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (int k = 0; k < TILE; ++k) {
+            acc += asub[k][tpitg.x] * bsub[k][tpitg.y];
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row < N && col < M) {
+        device float * d = (device float *)(
+            dst + (uint64_t) col*args.nb0 + (uint64_t) row*args.nb1 + (uint64_t) i2*args.nb2 + (uint64_t) i3*args.nb3);
+        d[0] = acc;
+    }
+}
+
+typedef decltype(kernel_out_prod_tq2_impl<block_tq2_0, QK_K>) kernel_out_prod_tq2_0_f32_t;
+typedef decltype(kernel_out_prod_tq2_impl<block_tq2_0_128, QK_TQ2_0_128>) kernel_out_prod_tq2_0_128_f32_t;
+
+template [[host_name("kernel_out_prod_tq2_0_f32")]] kernel kernel_out_prod_tq2_0_f32_t kernel_out_prod_tq2_impl<block_tq2_0, QK_K>;
+template [[host_name("kernel_out_prod_tq2_0_128_f32")]] kernel kernel_out_prod_tq2_0_128_f32_t kernel_out_prod_tq2_impl<block_tq2_0_128, QK_TQ2_0_128>;
+
 // assumption: src1 is a row
 // broadcast src1 into src0
 template <short F>

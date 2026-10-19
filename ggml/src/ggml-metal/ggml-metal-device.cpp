@@ -2059,6 +2059,12 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_out_prod(ggml_me
         snprintf(base, 256, "kernel_out_prod_q8_0_%s", ggml_type_name(src1t));
     } else if (src0t == GGML_TYPE_Q4_0) {
         snprintf(base, 256, "kernel_out_prod_q4_0_%s", ggml_type_name(src1t));
+    } else if (src0t == GGML_TYPE_TQ1_0) {
+        snprintf(base, 256, "kernel_out_prod_tq1_0_%s", ggml_type_name(src1t));
+    } else if (src0t == GGML_TYPE_TQ2_0) {
+        snprintf(base, 256, "kernel_out_prod_tq2_0_%s", ggml_type_name(src1t));
+    } else if (src0t == GGML_TYPE_TQ2_0_128) {
+        snprintf(base, 256, "kernel_out_prod_tq2_0_128_%s", ggml_type_name(src1t));
     } else if (src0t == GGML_TYPE_F16 && src1t == GGML_TYPE_F32) {
         snprintf(base, 256, "kernel_out_prod_f16_f32");
     } else if (src0t == GGML_TYPE_F32 && src1t == GGML_TYPE_F32) {

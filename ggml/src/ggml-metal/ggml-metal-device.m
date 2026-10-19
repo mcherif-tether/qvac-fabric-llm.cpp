@@ -1234,6 +1234,14 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 if (src0_type == GGML_TYPE_Q4_0 && (src1_type == GGML_TYPE_F32 || src1_type == GGML_TYPE_F16)) {
                     return true;
                 }
+                if (src0_type == GGML_TYPE_TQ1_0 && src1_type == GGML_TYPE_F32) {
+                    return ggml_is_contiguous_rows(op->src[0]) &&
+                           op->ne[0] % ggml_blck_size(GGML_TYPE_TQ1_0) == 0;
+                }
+                if ((src0_type == GGML_TYPE_TQ2_0 || src0_type == GGML_TYPE_TQ2_0_128) && src1_type == GGML_TYPE_F32) {
+                    return ggml_is_contiguous_rows(op->src[0]) &&
+                           op->ne[0] % ggml_blck_size(src0_type) == 0;
+                }
             }
             return false;
         case GGML_OP_REPEAT:
